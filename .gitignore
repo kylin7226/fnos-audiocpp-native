@@ -1,0 +1,13 @@
+# CI / 本地构建产物
+dist/
+audio.cpp-src/
+*.fpk
+*.tgz
+
+# 打包脚本临时目录
+*.tmp.*
+
+# 编辑器 / 系统
+.DS_Store
+*.swp
+*~

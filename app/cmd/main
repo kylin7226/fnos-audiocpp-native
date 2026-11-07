@@ -1,0 +1,107 @@
+#!/bin/bash
+# audio.cpp native fpk · 应用启停/状态管理（自包含，不依赖 shared/common）
+#
+# 由 fnOS 应用中心调用：main start|stop|status
+#   start  成功 exit 0，失败 exit 1
+#   stop   成功 exit 0
+#   status 运行中 exit 0，未运行 exit 3
+#
+# 运行身份：应用专用用户（run-as=package，已在 render/video 组）→ 直接用宿主 /dev/dri。
+set -u
+
+APPNAME="${TRIM_APPNAME:-audiocpp}"
+APPDEST="${TRIM_APPDEST}"                 # target/ ：app.tgz 解压处，含 bin/audiocpp_server 与 .so
+PKGETC="${TRIM_PKGETC}"                   # etc/    ：渲染后的 server.json
+PKGVAR="${TRIM_PKGVAR}"                   # var/    ：日志与 PID（可写）
+PORT="${TRIM_SERVICE_PORT:-58009}"
+
+BIN="${APPDEST}/bin/audiocpp_server"
+CONFIG="${PKGETC}/server.json"
+LOG_DIR="${PKGVAR}/logs"
+LOG_FILE="${LOG_DIR}/server.log"
+INFO_LOG="${PKGVAR}/info.log"
+PID_FILE="${PKGVAR}/${APPNAME}.pid"
+
+# rpath=$ORIGIN，.so 与二进制同目录；再显式给一份 LD_LIBRARY_PATH 兜底
+export LD_LIBRARY_PATH="${APPDEST}/bin:${LD_LIBRARY_PATH:-}"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" >> "${INFO_LOG}" 2>/dev/null || true; }
+
+pid_alive() {
+    local pid="$1"
+    [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null
+}
+
+read_pid() {
+    [ -r "${PID_FILE}" ] && head -n1 "${PID_FILE}" | tr -d '[:space:]'
+}
+
+is_running() {
+    local pid; pid="$(read_pid)"
+    if pid_alive "${pid}"; then
+        return 0
+    fi
+    # PID 文件失效时按二进制路径兜底探测
+    pgrep -f "${BIN} .*--port ${PORT}" >/dev/null 2>&1
+}
+
+start_process() {
+    if is_running; then
+        log "already running"
+        return 0
+    fi
+    if [ ! -x "${BIN}" ]; then
+        echo "找不到可执行文件：${BIN}" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+        log "binary missing: ${BIN}"
+        return 1
+    fi
+    if [ ! -f "${CONFIG}" ]; then
+        echo "配置未生成：${CONFIG}（install_callback 是否成功？）" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+        log "config missing: ${CONFIG}"
+        return 1
+    fi
+    mkdir -p "${LOG_DIR}"
+    log "starting: backend=vulkan port=${PORT}"
+    cd "${APPDEST}/bin" || return 1
+    nohup "${BIN}" \
+        --no-ui \
+        --host 0.0.0.0 \
+        --port "${PORT}" \
+        --backend vulkan \
+        --config "${CONFIG}" \
+        --log-file "${LOG_FILE}" \
+        >> "${LOG_FILE}" 2>&1 &
+    printf '%s' "$!" > "${PID_FILE}"
+    sleep 2
+    if is_running; then
+        log "started pid=$(read_pid)"
+        return 0
+    fi
+    echo "启动后进程立即退出，请查看日志：${LOG_FILE}" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+    log "process exited right after start"
+    return 1
+}
+
+stop_process() {
+    local pid; pid="$(read_pid)"
+    if pid_alive "${pid}"; then
+        log "stopping pid=${pid}"
+        kill -TERM "${pid}" 2>/dev/null || true
+        local i=0
+        while pid_alive "${pid}" && [ "${i}" -lt 15 ]; do sleep 1; i=$((i+1)); done
+        pid_alive "${pid}" && { kill -KILL "${pid}" 2>/dev/null || true; sleep 1; }
+    fi
+    # 清理任何残留（按精确二进制路径，避免误杀）
+    pkill -f "${BIN} .*--port ${PORT}" 2>/dev/null || true
+    rm -f "${PID_FILE}"
+    log "stopped"
+    return 0
+}
+
+case "${1:-}" in
+    start)  start_process; exit $? ;;
+    stop)   stop_process;  exit 0 ;;
+    status) if is_running; then exit 0; else exit 3; fi ;;
+    restart) stop_process; start_process; exit $? ;;
+    *)      exit 1 ;;
+esac

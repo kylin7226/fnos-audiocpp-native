@@ -1,0 +1,38 @@
+{
+  "schema_version": "moo",
+  "source_info": {
+    "name": "audio.cpp · fnOS native 应用源",
+    "homepage": "https://github.com/YOUR-ORG/fnos-audiocpp-native",
+    "distributor": "audiocpp-fnos-native",
+    "generated_by": "手工维护骨架 + .github/workflows/moo-json.yml（发 Release 后自动写入版本节点）",
+    "description": "audio.cpp 本地语音引擎（纯 API + Vulkan）的飞牛 fnOS 原生 .fpk 应用源。releases 节点由 CI 在首次发布 Release 后自动填充。",
+    "updated_at": "2026-11-07T00:00:00+08:00"
+  },
+  "apps": {
+    "audiocpp": {
+      "display_name": "audio.cpp",
+      "app_type": "native",
+      "platform": [
+        "x86"
+      ],
+      "desc": "audio.cpp 本地语音引擎（纯 API 模式，不启动 WebUI）。原生二进制 + Vulkan，为 Home Assistant / Assist 提供本地中文 TTS(CosyVoice3) 与 STT(SenseVoice)。安装后请把 GGUF 模型与参考音频放到应用的 audiocpp 共享目录。",
+      "author": "0xShug0",
+      "distributor": "audiocpp-fnos-native",
+      "homepage": "https://github.com/0xShug0/audio.cpp",
+      "bug_report_url": "https://github.com/YOUR-ORG/fnos-audiocpp-native/issues",
+      "license": "MIT",
+      "categories": [
+        "AI",
+        "实用效率"
+      ],
+      "install_type": "package",
+      "service_port": "58009",
+      "icon_url": "https://raw.githubusercontent.com/YOUR-ORG/fnos-audiocpp-native/main/app/ICON_256.PNG",
+      "readme_url": "https://raw.githubusercontent.com/YOUR-ORG/fnos-audiocpp-native/main/README.md",
+      "download_count": 0,
+      "version": "0.9.4",
+      "changelog": "",
+      "releases": {}
+    }
+  }
+}

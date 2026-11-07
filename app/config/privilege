@@ -1,0 +1,8 @@
+{
+    "defaults": {
+        "run-as": "package"
+    },
+    "username": "audiocpp",
+    "groupname": "audiocpp",
+    "extra-groups": ["video", "render"]
+}

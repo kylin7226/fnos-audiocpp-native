@@ -1,0 +1,39 @@
+{
+  "ui": false,
+  "models_root": "__DATA_ROOT__/models",
+  "voice_dir": "__DATA_ROOT__/voices",
+  "lazy_load": true,
+  "max_loaded_models": 0,
+  "idle_unload_ms": 0,
+  "min_free_memory_mb": 512,
+  "default_session_options": {
+    "sense_asr.vad_model_path": "__DATA_ROOT__/models/silero_vad/silero_vad_16k.safetensors"
+  },
+  "models": [
+    {
+      "id": "zh-tts",
+      "family": "cosyvoice3",
+      "path": "__DATA_ROOT__/models/CosyVoice3-GGUF/cosyvoice3-q8_0.gguf",
+      "task": "tts",
+      "mode": "offline",
+      "default_request_options": {
+        "template_name": "instruct",
+        "instruct": "Speak clearly and naturally in a warm, friendly Mandarin tone.",
+        "text_chunk_size": 600
+      }
+    },
+    {
+      "id": "zh-asr",
+      "family": "sense_asr",
+      "path": "__DATA_ROOT__/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf",
+      "task": "asr",
+      "mode": "streaming",
+      "default_request_options": {
+        "language": "zh",
+        "enable_itn": true,
+        "keep_tags": true,
+        "audio_chunk_mode": "none"
+      }
+    }
+  ]
+}

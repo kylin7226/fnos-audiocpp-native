@@ -1,0 +1,11 @@
+[
+    {
+        "stepTitle": "安装 audio.cpp",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "audio.cpp 以<b>纯 API 模式</b>运行（不含 WebUI），监听端口 <b>58009</b>，为 Home Assistant / Assist 提供本地中文 TTS 与 STT。<br/><br/>安装后系统会创建一个名为 <b>audiocpp</b> 的共享目录（文件管理 → 应用文件）。请把模型放到：<br/>· <code>audiocpp/models/CosyVoice3-GGUF/cosyvoice3-q8_0.gguf</code><br/>· <code>audiocpp/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf</code><br/><br/>参考音频（CosyVoice3 必需）已由安装包预置 <code>demo_voices</code> 到 <code>audiocpp/voices/</code>，可自行增删。<br/><br/><b>GPU：</b>本包为 Vulkan 原生版，应用用户已加入 render/video 组，直接使用宿主核显/独显，无需容器透传。若 <code>/dev/dri</code> 不存在将退回不可用，请确认核显驱动已加载。"
+            }
+        ]
+    }
+]

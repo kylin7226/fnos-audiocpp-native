@@ -1,0 +1,9 @@
+#!/bin/bash
+# 升级后处理：用新模板重新渲染 server.json，并按“缺失才补”的原则重播 VAD/demo 音频。
+# 复用 install_callback 的逻辑，避免重复。已存在的用户模型不会被覆盖。
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ -x "${HERE}/install_callback" ]; then
+    exec "${HERE}/install_callback" "$@"
+fi
+exit 0

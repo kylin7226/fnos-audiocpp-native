@@ -1,0 +1,60 @@
+#!/bin/bash
+# 安装后初始化：解析数据共享目录、预置 VAD 权重与 demo 参考音频、渲染 server.json。
+# 由应用中心在文件解压到 TRIM_APPDEST 之后调用。
+set -u
+
+APPNAME="${TRIM_APPNAME:-audiocpp}"
+APPDEST="${TRIM_APPDEST}"
+PKGETC="${TRIM_PKGETC}"
+PKGVAR="${TRIM_PKGVAR}"
+NOTE="${TRIM_TEMP_LOGFILE:-/dev/null}"
+INFO_LOG="${PKGVAR}/info.log"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - install: $*" >> "${INFO_LOG}" 2>/dev/null || true; }
+
+# ── 数据根目录：优先用 data-share（文件管理 → 应用文件 可见，卸载保留），
+#    回退到 var/ 下的 data（无共享时也能跑）。
+DATA_ROOT="${TRIM_DATA_SHARE_PATHS%%:*}"
+if [ -z "${DATA_ROOT}" ]; then
+    DATA_ROOT="${PKGVAR}/data"
+    echo "提示：未获取到 data-share 路径，改用 ${DATA_ROOT}。" > "${NOTE}"
+fi
+log "DATA_ROOT=${DATA_ROOT}"
+
+mkdir -p "${DATA_ROOT}/models/CosyVoice3-GGUF" \
+         "${DATA_ROOT}/models/SenseVoice-Small-GGUF" \
+         "${DATA_ROOT}/models/silero_vad" \
+         "${DATA_ROOT}/voices" \
+         "${DATA_ROOT}/logs"
+
+# ── 预置 silero VAD 权重（官方镜像/裸源码常漏，SenseVoice 分块必需）
+VAD_SRC="${APPDEST}/assets/silero_vad/silero_vad_16k.safetensors"
+VAD_DST="${DATA_ROOT}/models/silero_vad/silero_vad_16k.safetensors"
+if [ -f "${VAD_SRC}" ] && [ ! -f "${VAD_DST}" ]; then
+    cp "${VAD_SRC}" "${VAD_DST}" && log "seeded silero_vad"
+fi
+
+# ── 预置 demo 参考音频（CosyVoice3 必需，HA 里 Voice 填 demo_3_woman）
+if [ -d "${APPDEST}/assets/demo_voices" ] && [ -z "$(ls -A "${DATA_ROOT}/voices" 2>/dev/null)" ]; then
+    cp -r "${APPDEST}/assets/demo_voices/." "${DATA_ROOT}/voices/" && log "seeded demo_voices"
+fi
+
+# ── 渲染 server.json：把模板里的 __DATA_ROOT__ 换成真实共享路径
+TEMPLATE="${APPDEST}/etc/server.json.template"
+if [ -f "${TEMPLATE}" ]; then
+    mkdir -p "${PKGETC}"
+    sed "s#__DATA_ROOT__#${DATA_ROOT}#g" "${TEMPLATE}" > "${PKGETC}/server.json"
+    log "rendered ${PKGETC}/server.json"
+else
+    echo "错误：找不到 server.json 模板 ${TEMPLATE}，配置未生成。" > "${NOTE}"
+    exit 1
+fi
+
+# ── 属主修正：确保应用用户可读写数据目录（安装脚本可能以 root 运行）
+if [ -n "${TRIM_USERNAME:-}" ]; then
+    chown -R "${TRIM_USERNAME}:${TRIM_GROUPNAME:-${TRIM_USERNAME}}" "${DATA_ROOT}" 2>/dev/null || true
+    chown -R "${TRIM_USERNAME}:${TRIM_GROUPNAME:-${TRIM_USERNAME}}" "${PKGETC}" "${PKGVAR}" 2>/dev/null || true
+fi
+
+echo "audio.cpp 已初始化。请把 GGUF 模型放入：${DATA_ROOT}/models/（详见安装向导）。" > "${NOTE}"
+exit 0

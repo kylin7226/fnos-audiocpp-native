@@ -1,0 +1,8 @@
+#!/bin/bash
+# 卸载后处理：系统会自动删除 target/etc/tmp/home，但保留 var 与 data-share（模型不丢）。
+# 这里只记录日志，不删除用户模型/参考音频。
+set -u
+PKGVAR="${TRIM_PKGVAR}"
+echo "$(date '+%Y-%m-%d %H:%M:%S') - uninstall: 已卸载；模型与参考音频保留在 data-share，未删除。" \
+    >> "${PKGVAR}/info.log" 2>/dev/null || true
+exit 0

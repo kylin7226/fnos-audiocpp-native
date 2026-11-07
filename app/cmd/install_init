@@ -1,0 +1,14 @@
+#!/bin/bash
+# 安装前预检：确认 Vulkan 所需的 /dev/dri 渲染节点存在。
+# 缺失只告警不阻断（用户可能后补驱动），信息写入用户可见日志。
+set -u
+
+NOTE="${TRIM_TEMP_LOGFILE:-/dev/null}"
+
+if [ ! -e /dev/dri ]; then
+    echo "警告：未发现 /dev/dri，Vulkan 无法使用（核显驱动未加载或 BIOS 关闭了核显）。安装会继续，但服务启动后 GPU 不可用。" > "${NOTE}"
+elif ! ls /dev/dri/renderD* >/dev/null 2>&1; then
+    echo "警告：/dev/dri 下没有 renderD* 渲染节点，Vulkan 可能不可用。" > "${NOTE}"
+fi
+
+exit 0

@@ -1,0 +1,17 @@
+{
+    "port-config": {
+        "protocol-file": "audiocpp.sc"
+    },
+    "data-share": {
+        "shares": [
+            {
+                "name": "audiocpp",
+                "permission": {
+                    "rw": [
+                        "audiocpp"
+                    ]
+                }
+            }
+        ]
+    }
+}

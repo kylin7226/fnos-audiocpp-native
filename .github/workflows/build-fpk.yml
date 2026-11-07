@@ -1,0 +1,98 @@
+name: build-fnos-fpk
+
+# 在 Debian 12（glibc 2.36，与 fnOS 一致）里编译 audio.cpp Vulkan 版，
+# 再打包成可在飞牛 fnOS 应用中心直接安装的 .fpk（原生二进制，不用容器）。
+#
+# 编译源默认锁定 audio.cpp 的正式发布版（tag v0.9.4），而非 main 分支，
+# 保证可复现、可追溯。要升级时改下面的 default，或手动触发时填新 tag。
+#
+# 触发：
+#   - 手动（Actions → build-fnos-fpk → Run workflow），可指定 audio.cpp ref 与版本号
+#   - 推送 v* tag（tag 名即 audio.cpp 的 release tag，如 v0.9.4；自动建 Release 附 .fpk）
+
+on:
+  workflow_dispatch:
+    inputs:
+      audiocpp_ref:
+        description: 'audio.cpp 源码 ref（正式发布 tag，如 v0.9.4）'
+        required: false
+        default: 'v0.9.4'
+      version:
+        description: 'fpk 版本号（写入 manifest，留空则由 ref 推导）'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout packager repo
+        uses: actions/checkout@v4
+
+      - name: Resolve version & source ref
+        id: vars
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # tag 名即 audio.cpp 的正式 release tag（v0.9.4），版本号去掉前缀 v。
+            tag="${GITHUB_REF#refs/tags/}"
+            echo "ref=${tag}" >> "$GITHUB_OUTPUT"
+            echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          else
+            ref="${{ inputs.audiocpp_ref }}"
+            ver="${{ inputs.version }}"
+            [[ -z "$ver" ]] && ver="${ref#v}"
+            echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+            echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "编译源 ref=$(grep '^ref=' "$GITHUB_OUTPUT" | cut -d= -f2)，版本号 version=$(grep '^version=' "$GITHUB_OUTPUT" | cut -d= -f2)"
+
+      # 上游 audio.cpp 是公开仓库，普通 checkout 即可；不拉子模块
+      # （唯一子模块是 WebUI 前端，纯 API 构建用不到，官方 release 也不拉）。
+      - name: Checkout audio.cpp source
+        uses: actions/checkout@v4
+        with:
+          repository: 0xShug0/audio.cpp
+          ref: ${{ steps.vars.outputs.ref }}
+          path: audio.cpp-src
+          fetch-depth: 1
+
+      # 关键：在 debian:12 容器里编译，产物链接 bookworm 的 glibc 2.36，
+      # 才能在 fnOS(Debian 12) 上运行（官方 Ubuntu 24.04 二进制 glibc 2.39 跑不了）。
+      # 采用官方 linux-vulkan-**portable** 配方（NATIVE_CPU=OFF + CPU_ALL_VARIANTS=ON），
+      # 避免按 runner CPU 做 -march=native 导致在用户 NAS 上 SIGILL。
+      - name: Build audiocpp (Vulkan) in debian:12
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/work \
+            -e SRC_DIR=/work/audio.cpp-src \
+            -e REPO_DIR=/work \
+            -e OUT_TGZ=/work/dist/app.tgz \
+            -e AUDIOCPP_VERSION="${{ steps.vars.outputs.version }}" \
+            -e JOBS="$(nproc)" \
+            debian:12 \
+            bash /work/scripts/build-audiocpp.sh
+
+      - name: Pack .fpk
+        run: |
+          chmod +x scripts/*.sh
+          bash scripts/pack-fpk.sh app dist/app.tgz "${{ steps.vars.outputs.version }}" x86 dist
+
+      - name: Upload fpk artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: audiocpp-fnos-fpk
+          path: dist/*.fpk
+          if-no-files-found: error
+
+      - name: Attach to Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.fpk
+          generate_release_notes: true
