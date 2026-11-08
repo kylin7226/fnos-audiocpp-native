@@ -3,22 +3,33 @@ name: build-fnos-fpk
 # 在 Debian 12（glibc 2.36，与 fnOS 一致）里编译 audio.cpp Vulkan 版，
 # 再打包成可在飞牛 fnOS 应用中心直接安装的 .fpk（原生二进制，不用容器）。
 #
-# 编译源默认锁定 audio.cpp 的正式发布版（tag v0.9.4），而非 main 分支，
-# 保证可复现、可追溯。要升级时改下面的 default，或手动触发时填新 tag。
+# ── 版本号方案：<上游 audio.cpp 版本>-<本打包项目修订号(三位)>，例如 0.9.4-001 ──
+#   · 上游版本锁正式发布 tag（如 v0.9.4），保证源码可复现、可追溯；
+#   · 修订号区分「同一上游版本、本仓库多次打包」——改了构建脚本/配置/资产后重打包，
+#     就递增 -001、-002…。这也是 Synology/fnOS 系包管理惯用的 version-revision 形式，
+#     fnOS 会据此判定升级。manifest 版本、fpk 文件名、Release、moo.json 全用它。
 #
-# 触发：
-#   - 手动（Actions → build-fnos-fpk → Run workflow），可指定 audio.cpp ref 与版本号
-#   - 推送 v* tag（tag 名即 audio.cpp 的 release tag，如 v0.9.4；自动建 Release 附 .fpk）
+# ── 两种触发策略 ──
+#   A) 推送 tag v*（正式发布，推荐用带修订号的 tag，如 v0.9.4-001）
+#      → 正式构建：产出 .fpk，上传 artifact，并创建 Release 附带 .fpk。
+#        tag 名即版本；上游源码 ref 取 tag 的 base 部分（v0.9.4-001 → 上游 v0.9.4）。
+#        兼容不带修订号的老 tag（v0.9.4 → 视为 0.9.4-000）。
+#   B) 手动触发（Actions → build-fnos-fpk → Run workflow，在 main 分支上）
+#      → 预览构建：只产出 artifact，不建 Release、不进 moo 索引，用于验证改动能否编过。
+#        修订号可留空自动按现有 v<base>-NNN tag 数递增，或手填三位数。
+#
+# 发布正式版的完整流程：本地 `git tag v0.9.4-001 && git push origin v0.9.4-001`
+# → 策略 A 构建并创建 Release → Release published 触发 moo-json.yml 写回市场索引。
 
 on:
   workflow_dispatch:
     inputs:
       audiocpp_ref:
-        description: 'audio.cpp 源码 ref（正式发布 tag，如 v0.9.4）'
+        description: '上游 audio.cpp 版本（正式发布 tag，如 v0.9.4）'
         required: false
         default: 'v0.9.4'
-      version:
-        description: 'fpk 版本号（写入 manifest，留空则由 ref 推导）'
+      revision:
+        description: '打包修订号（三位，如 001）；留空则按现有同名 tag 数自动递增'
         required: false
         default: ''
   push:
@@ -34,23 +45,42 @@ jobs:
     steps:
       - name: Checkout packager repo
         uses: actions/checkout@v4
+        with:
+          # 需要完整 tag 列表来自动推算修订号（策略 B 留空时）
+          fetch-depth: 0
 
       - name: Resolve version & source ref
         id: vars
+        env:
+          IN_REF: ${{ inputs.audiocpp_ref }}
+          IN_REV: ${{ inputs.revision }}
         run: |
+          set -euo pipefail
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            # tag 名即 audio.cpp 的正式 release tag（v0.9.4），版本号去掉前缀 v。
-            tag="${GITHUB_REF#refs/tags/}"
-            echo "ref=${tag}" >> "$GITHUB_OUTPUT"
-            echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+            # 策略 A：tag 名即版本。tag 形如 0.9.4-001 或老式 0.9.4。
+            tag="${GITHUB_REF#refs/tags/v}"
+            base="${tag%%-*}"                       # 上游版本，如 0.9.4
+            if [[ "$tag" == *-* ]]; then rev="${tag##*-}"; else rev="000"; fi
+            kind="release"
           else
-            ref="${{ inputs.audiocpp_ref }}"
-            ver="${{ inputs.version }}"
-            [[ -z "$ver" ]] && ver="${ref#v}"
-            echo "ref=${ref}" >> "$GITHUB_OUTPUT"
-            echo "version=${ver}" >> "$GITHUB_OUTPUT"
+            # 策略 B：main 手动预览。base 取输入的上游版本（去掉可能的 v 前缀）。
+            base="${IN_REF#v}"
+            rev="${IN_REV}"
+            if [[ -z "$rev" ]]; then
+              n=$(git tag -l "v${base}-[0-9][0-9][0-9]" | wc -l | tr -d ' ')
+              rev=$(printf "%03d" "$n")
+            fi
+            kind="preview"
           fi
-          echo "编译源 ref=$(grep '^ref=' "$GITHUB_OUTPUT" | cut -d= -f2)，版本号 version=$(grep '^version=' "$GITHUB_OUTPUT" | cut -d= -f2)"
+          [[ "$rev" =~ ^[0-9]{3}$ ]] || { echo "::error::修订号必须是三位数字，得到：'$rev'" >&2; exit 1; }
+          version="${base}-${rev}"
+          ref="v${base}"
+          {
+            echo "ref=${ref}"
+            echo "version=${version}"
+            echo "kind=${kind}"
+          } >> "$GITHUB_OUTPUT"
+          echo "上游 ref=${ref} · 打包版本=${version} · 类型=${kind}"
 
       # 上游 audio.cpp 是公开仓库，普通 checkout 即可；不拉子模块
       # （唯一子模块是 WebUI 前端，纯 API 构建用不到，官方 release 也不拉）。
@@ -86,13 +116,16 @@ jobs:
       - name: Upload fpk artifact
         uses: actions/upload-artifact@v4
         with:
-          name: audiocpp-fnos-fpk
+          name: audiocpp-fnos-fpk-${{ steps.vars.outputs.version }}
           path: dist/*.fpk
           if-no-files-found: error
 
+      # 仅策略 A（推 tag）建 Release；策略 B（手动预览）到此为止，只留 artifact。
       - name: Attach to Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.vars.outputs.kind == 'release'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: audio.cpp fnOS fpk ${{ steps.vars.outputs.version }}
           files: dist/*.fpk
           generate_release_notes: true

@@ -71,9 +71,19 @@ fnos-audiocpp-native/
 
 把本目录推到一个 GitHub 仓库后：
 
-- **手动**：Actions → `build-fnos-fpk` → Run workflow，填 `audiocpp_ref`（默认 `v0.9.4`，
-  上游正式 tag）与 `version`（留空则由 ref 推导）。产物在 Artifacts 里（`audiocpp-fnos-fpk`）。
-- **打 tag**：`git tag v0.9.4 && git push --tags` → 自动构建上游 `v0.9.4` 并创建 Release 附上 `.fpk`。
+版本号方案：`<上游版本>-<打包修订号(三位)>`，如 `0.9.4-001`。上游版本锁正式 tag（可复现），
+修订号区分「同一上游版本、本仓库多次打包」（改脚本/配置后重打包递增 `-001`、`-002`…），
+是 Synology/fnOS 系惯用的 `version-revision` 形式，fnOS 据此判定升级。
+
+两种触发策略：
+
+- **策略 B｜手动预览（main 分支）**：Actions → `build-fnos-fpk` → Run workflow，填 `audiocpp_ref`
+  （默认 `v0.9.4`）与 `revision`（三位；留空则按现有 `v<base>-NNN` tag 数自动递增）。
+  **只产 artifact、不建 Release、不进 moo 索引**，用于验证改动能否编过。产物在 Artifacts
+  （`audiocpp-fnos-fpk-<版本>`）。
+- **策略 A｜打 tag 正式发布**：`git tag v0.9.4-001 && git push origin v0.9.4-001`
+  → 构建上游 `v0.9.4` 并创建 Release 附 `.fpk`（版本 `0.9.4-001`）→ Release published
+  再触发 `Update moo.json` 写回市场索引。兼容不带修订号的老 tag（`v0.9.4` 视为 `0.9.4-000`）。
 
 CI 流程：checkout 本仓库 → checkout 上游 `0xShug0/audio.cpp`（锁定 release tag，不拉子模块，
 纯 API 用不到 WebUI 前端）→ `docker run debian:12` 跑 `build-audiocpp.sh`（bookworm 默认 gcc-12 + Vulkan +
@@ -247,8 +257,9 @@ bash scripts/pack-fpk.sh app dist/app.tgz 0.9.4 x86 dist
 
 ```bash
 python3 tools/update_moo_json.py --file moo.json --repo kylin7226/fnos-audiocpp-native \
-  --tag v0.9.4 --fpk dist/audiocpp_0.9.4_x86.fpk --keep 2 --dry-run
+  --tag v0.9.4-000 --fpk dist/audiocpp_0.9.4-000_x86.fpk --keep 2 --dry-run
 ```
 
-> 发布流程：`git tag v0.9.4 && git push --tags` → `build-fpk` 构建并创建 Release 附 `.fpk`
-> → Release published 触发 `Update moo.json` 自动把该版本写进索引。
+> 发布流程：`git tag v0.9.4-000 && git push origin v0.9.4-000` → `build-fpk` 构建并创建
+> Release 附 `.fpk`（版本 `0.9.4-000`）→ Release published 触发 `Update moo.json` 自动写回索引。
+> 同一上游版本重新打包时递增修订号：`v0.9.4-001`、`v0.9.4-002`…
