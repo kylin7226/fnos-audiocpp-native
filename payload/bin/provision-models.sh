@@ -22,6 +22,10 @@ CONFIG="${1:-}"; BIN_DIR="${2:-}"; LOG_DIR="${3:-}"
 [[ -x "$BIN_DIR/audiocpp_model_manager" ]] || { echo "provision: 找不到 $BIN_DIR/audiocpp_model_manager" >&2; exit 1; }
 MM="$BIN_DIR/audiocpp_model_manager"
 
+# portable 构建下后端/依赖是 bin/ 里的 .so（rpath=$ORIGIN 已能定位）；再显式给一份
+# LD_LIBRARY_PATH 兜底 dlopen，且不依赖调用方（install_callback 未导出它，main 导出了）。
+export LD_LIBRARY_PATH="$BIN_DIR:${LD_LIBRARY_PATH:-}"
+
 # family → 默认 GGUF 包 id（取自上游 model_specs/*.json 的 default 包）
 pkg_id_for_family() {
     case "$1" in
