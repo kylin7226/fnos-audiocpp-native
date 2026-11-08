@@ -76,7 +76,7 @@ fnos-audiocpp-native/
 - **打 tag**：`git tag v0.9.4 && git push --tags` → 自动构建上游 `v0.9.4` 并创建 Release 附上 `.fpk`。
 
 CI 流程：checkout 本仓库 → checkout 上游 `0xShug0/audio.cpp`（锁定 release tag，不拉子模块，
-纯 API 用不到 WebUI 前端）→ `docker run debian:12` 跑 `build-audiocpp.sh`（gcc-13 + Vulkan +
+纯 API 用不到 WebUI 前端）→ `docker run debian:12` 跑 `build-audiocpp.sh`（bookworm 默认 gcc-12 + Vulkan +
 portable + `DEPLOYMENT_BUILD=ON`）产出 `app.tgz` → `pack-fpk.sh` 产出 `.fpk`。
 
 > 首次编译约 20–60 分钟（audio.cpp 体量大，Vulkan + CPU 多 ISA 变体）。属正常。

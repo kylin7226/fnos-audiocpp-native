@@ -37,17 +37,20 @@ if [[ -r /etc/debian_version ]]; then
 fi
 
 # ── 1. 依赖 ────────────────────────────────────────────────────────────────────
-# 与官方 release.yml linux-vulkan 一致，但 Debian 12 的 build-essential 是 gcc-12
-# （< audio.cpp 要求的 13），所以显式装 gcc-13/g++-13，如同官方 CUDA job 对 ubuntu22.04。
+# audio.cpp 只需 C++17（上游 CMakeLists: CMAKE_CXX_STANDARD 17），Debian 12 自带的
+# gcc-12(build-essential) 完全够用——官方 release.yml 的 Vulkan job 也只用
+# build-essential，唯独 CUDA job 才 pin gcc-13(nvcc 需要)。而 bookworm 默认源里
+# **没有** gcc-13（它在 trixie/sid），硬装会 "Unable to locate package" 直接 exit 100。
+# 附带好处：gcc-12 的 libstdc++(GLIBCXX_3.4.30) 与 fnOS 运行时一致，无需额外捆绑。
 log "安装构建依赖（apt / bookworm）"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
-    gcc-13 g++-13 make cmake ca-certificates \
+    build-essential make cmake ca-certificates \
     glslc libvulkan-dev spirv-headers \
     libxcb-xinput0 libxcb-xinerama0 libxcb-cursor-dev \
     libgomp1
-command -v gcc-13 >/dev/null || die "gcc-13 安装失败"
+command -v g++ >/dev/null || die "g++ 安装失败"
 
 # ── 2. 配置 + 构建（对齐官方 release.yml 的 linux-vulkan-**portable** 配方）──────
 # 关键：用 portable 而非默认（native）配方。ENGINE_DEFAULT_ENABLE_NATIVE_CPU=ON，
@@ -56,7 +59,7 @@ command -v gcc-13 >/dev/null || die "gcc-13 安装失败"
 # 关掉 native、开启 CPU_ALL_VARIANTS（把 CPU 后端编成按 ISA 分派的动态库，运行时自选），
 # 因此可在任意 x86-64 NAS 上安全运行。这些 ggml-cpu-*.so 会被下面 3.1 一并打进 bin/。
 log "cmake 配置（Vulkan portable，DEPLOYMENT_BUILD=ON）"
-export CC=gcc-13 CXX=g++-13
+export CC=gcc CXX=g++
 cmake -S "$SRC_DIR" -B "$SRC_DIR/build" \
     -DCMAKE_BUILD_TYPE=Release \
     -DENGINE_ENABLE_CUDA=OFF \
