@@ -35,6 +35,16 @@ on:
   push:
     tags:
       - 'v*'
+  # 供 watch-upstream.yml 链式调用：监听到上游新 release 时，直接以指定完整版本
+  # （如 0.9.5-000）跑正式发布链。之所以用 workflow_call 而非“推 tag 触发 push”，是
+  # 因为 GITHUB_TOKEN 推送的 tag 不会触发新的 workflow run；而 workflow_call 在同一
+  # run 内内联执行，不受该限制。版本 tag 由下面的 softprops 在建 Release 时自动创建。
+  workflow_call:
+    inputs:
+      version:
+        description: '完整打包版本 <上游版本>-<三位修订号>，如 0.9.5-000'
+        type: string
+        required: true
 
 permissions:
   contents: write
@@ -44,6 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       kind: ${{ steps.vars.outputs.kind }}
+      tag_name: ${{ steps.vars.outputs.tag_name }}
     steps:
       - name: Checkout packager repo
         uses: actions/checkout@v4
@@ -56,9 +67,16 @@ jobs:
         env:
           IN_REF: ${{ inputs.audiocpp_ref }}
           IN_REV: ${{ inputs.revision }}
+          IN_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_call" ]]; then
+            # 策略 C：被 watch-upstream.yml 链式调用。version 已给定完整值（如 0.9.5-000）。
+            version_in="${IN_VERSION}"
+            base="${version_in%%-*}"
+            rev="${version_in##*-}"
+            kind="release"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             # 策略 A：tag 名即版本。tag 形如 0.9.4-001 或老式 0.9.4。
             tag="${GITHUB_REF#refs/tags/v}"
             base="${tag%%-*}"                       # 上游版本，如 0.9.4
@@ -77,12 +95,16 @@ jobs:
           [[ "$rev" =~ ^[0-9]{3}$ ]] || { echo "::error::修订号必须是三位数字，得到：'$rev'" >&2; exit 1; }
           version="${base}-${rev}"
           ref="v${base}"
+          # tag_name 统一为 v<version>：策略 A 下恰好等于 github.ref_name；策略 C 下由
+          # softprops 据此在远端自动创建版本 tag（指向本次 run 的仓库 HEAD）。
+          tag_name="v${version}"
           {
             echo "ref=${ref}"
             echo "version=${version}"
             echo "kind=${kind}"
+            echo "tag_name=${tag_name}"
           } >> "$GITHUB_OUTPUT"
-          echo "上游 ref=${ref} · 打包版本=${version} · 类型=${kind}"
+          echo "上游 ref=${ref} · 打包版本=${version} · 类型=${kind} · tag=${tag_name}"
 
       # 上游 audio.cpp 是公开仓库，普通 checkout 即可；不拉子模块
       # （唯一子模块是 WebUI 前端，纯 API 构建用不到，官方 release 也不拉）。
@@ -142,12 +164,13 @@ jobs:
           path: dist/*.fpk
           if-no-files-found: error
 
-      # 仅策略 A（推 tag）建 Release；策略 B（手动预览）到此为止，只留 artifact。
-      - name: Attach to Release (on tag)
+      # 正式发布（策略 A 推 tag / 策略 C 链式调用）建 Release；策略 B 手动预览到此为止。
+      # tag_name=v<version>：策略 A 已存在同名 tag，策略 C 下 softprops 会自动创建它。
+      - name: Attach to Release
         if: steps.vars.outputs.kind == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ steps.vars.outputs.tag_name }}
           name: audio.cpp fnOS fpk ${{ steps.vars.outputs.version }}
           files: dist/*.fpk
           generate_release_notes: true
@@ -160,4 +183,4 @@ jobs:
     if: needs.build.outputs.kind == 'release'
     uses: ./.github/workflows/moo-json.yml
     with:
-      tag: ${{ github.ref_name }}
+      tag: ${{ needs.build.outputs.tag_name }}

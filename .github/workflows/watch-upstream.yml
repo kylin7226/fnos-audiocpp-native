@@ -1,0 +1,110 @@
+name: watch-upstream-release
+
+# 每天检查上游 0xShug0/audio.cpp 是否发布了新的正式 release。若发现我们尚未打包过的
+# 基础版本（例如上游出了 v0.9.5，而本仓库没有 v0.9.5-* tag），就以 workflow_call 直接
+# 触发 build-fpk.yml 的正式发布链：构建 → fnpack 打包 → 建 Release → 更新 moo.json。
+#
+# 为什么用 workflow_call 而不是“自动推 tag 触发 push”：GitHub 规定用 GITHUB_TOKEN 推送
+# 的 tag 不会触发新的 workflow run（push 事件被抑制），只有 workflow_dispatch /
+# repository_dispatch / workflow_call 例外。链式调用在同一次 run 内内联执行，绕开该限制；
+# 版本 tag（v<base>-<rev>）由 build-fpk.yml 里的 softprops 在建 Release 时自动创建。
+#
+# 权限：顶层必须给 contents: write——被调用的 build-fpk.yml 及其嵌套调用的 moo-json.yml
+# 继承调用方的 token 权限，softprops 建 Release/tag、moo 写回索引都需要写权限。
+
+on:
+  schedule:
+    # 每天 UTC 03:20（错峰整点，减少 GitHub 调度延迟/拥塞）
+    - cron: '20 3 * * *'
+  workflow_dispatch:
+    inputs:
+      base:
+        description: '强制检查/构建的上游基础版本（如 0.9.5）；留空=自动取上游最新 release'
+        required: false
+        default: ''
+      force:
+        description: '即使已打包过该版本也重新构建（true/false，会递增修订号）'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+# 串行化：避免上一次监听构建还没跑完又叠一次
+concurrency:
+  group: watch-upstream
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      has_new: ${{ steps.detect.outputs.has_new }}
+      version: ${{ steps.detect.outputs.version }}
+      base: ${{ steps.detect.outputs.base }}
+    steps:
+      - name: Checkout packager repo
+        uses: actions/checkout@v4
+        with:
+          # 需要完整 tag 列表来判断该基础版本是否已打包过、以及推算新修订号
+          fetch-depth: 0
+
+      - name: Detect new upstream release
+        id: detect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IN_BASE: ${{ inputs.base }}
+          IN_FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          UPSTREAM="0xShug0/audio.cpp"
+
+          if [[ -n "${IN_BASE}" ]]; then
+            base="${IN_BASE#v}"
+            echo "手动指定基础版本：${base}"
+          else
+            # /releases/latest 只返回非 draft、非 prerelease 的最新正式 release
+            tag="$(curl -fsSL \
+                     -H "Authorization: Bearer ${GH_TOKEN}" \
+                     -H "Accept: application/vnd.github+json" \
+                     "https://api.github.com/repos/${UPSTREAM}/releases/latest" \
+                   | jq -r '.tag_name // empty')"
+            [[ -n "${tag}" ]] || { echo "::error::取上游最新 release 失败（限流？网络？）" >&2; exit 1; }
+            base="${tag#v}"
+            echo "上游最新 release：${tag} → 基础版本 ${base}"
+          fi
+
+          force="${IN_FORCE:-false}"
+          existing="$(git tag -l "v${base}-[0-9][0-9][0-9]" | sort -V | tail -1 || true)"
+
+          if [[ -n "${existing}" && "${force}" != "true" ]]; then
+            echo "已打包过 ${base}（现有 tag：${existing}），无需构建。"
+            {
+              echo "has_new=false"
+              echo "base=${base}"
+              echo "version="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 修订号：无同名 tag → 000；有（force 重跑）→ 现有最大修订号 +1
+          if [[ -n "${existing}" ]]; then
+            rev=$(printf "%03d" "$((10#${existing##*-} + 1))")
+          else
+            rev="000"
+          fi
+          version="${base}-${rev}"
+          echo "发现需构建的新版本：${version}"
+          {
+            echo "has_new=true"
+            echo "base=${base}"
+            echo "version=${version}"
+          } >> "$GITHUB_OUTPUT"
+
+  # 仅在检测到新版本时，链式调用正式发布链
+  build-release:
+    needs: check
+    if: needs.check.outputs.has_new == 'true'
+    uses: ./.github/workflows/build-fpk.yml
+    with:
+      version: ${{ needs.check.outputs.version }}
