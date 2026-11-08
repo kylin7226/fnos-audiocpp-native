@@ -114,6 +114,10 @@ jobs:
 
       - name: Pack .fpk
         run: |
+          # 上一步 docker 以 root 身份创建 dist/ 和 app.tgz，而本步以非 root 的 runner
+          # 用户运行——不改属主则 pack-fpk.sh 无法把 .fpk 写进 dist/（tar 报 Permission
+          # denied，退出码 2）。GitHub 托管 runner 有免密 sudo，这里把 dist/ 交还 runner。
+          sudo chown -R "$(id -u):$(id -g)" dist
           chmod +x scripts/*.sh
           bash scripts/pack-fpk.sh app dist/app.tgz "${{ steps.vars.outputs.version }}" x86 dist
 
