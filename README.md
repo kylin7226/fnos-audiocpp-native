@@ -63,9 +63,10 @@ fnos-audiocpp-native/
     └── pack-fpk.sh                   # 骨架 + app.tgz → .fpk（自包含，不依赖 fnpack）
 ```
 
-两层结构：**fpk 根**（manifest/cmd/config/ui/wizard/图标/sc）是元数据；
-**app.tgz** 是载荷，安装时解压到 `TRIM_APPDEST`(target/)，含
-`bin/audiocpp_server`、`bin/*.so`（rpath=`$ORIGIN` 需同目录）、`etc/` 模板、`assets/`。
+两层结构：**fpk 根**（manifest/cmd/config/wizard/图标/sc，均为裸名 tar 条目、不带 `./` 前缀）
+是元数据；**app.tgz** 是载荷，安装时解压到 `TRIM_APPDEST`(target/)，含
+`bin/audiocpp_server`、`bin/*.so`（rpath=`$ORIGIN` 需同目录）、`etc/` 模板、`assets/`、
+以及桌面入口 `ui/`（`desktop_uidir=ui` 指向 target/ui，故 ui 必须在 app.tgz 内、不能放 fpk 顶层）。
 
 ## 3. CI 产出 fpk
 
@@ -149,7 +150,6 @@ CI 流程：checkout 本仓库 → checkout 上游 `0xShug0/audio.cpp`（锁定 
 │   └── uninstall_callback         #   卸载保留数据，只记日志
 ├── config/privilege               # run-as=package + extra-groups video,render（GPU）
 ├── config/resource                # data-share(audiocpp) + port-config
-├── ui/config                      # 桌面入口（→ :58009/health）
 ├── wizard/install                 # 安装向导
 │  ── 以下为系统建立的软链接 ──
 ├── target -> /vol1/@appcenter/audiocpp    # app.tgz 解压处（TRIM_APPDEST）
@@ -171,6 +171,9 @@ target/
 │   ├── provision-models.sh        # 按 server.json 下载缺失模型
 │   └── *.so*                      # 依赖库 + ggml-cpu-*.so（rpath=$ORIGIN，须同目录）
 ├── etc/server.json.template       # 配置模板（含 __DATA_ROOT__ 占位）
+├── ui/                            # 桌面入口（desktop_uidir=ui）
+│   ├── config                     #   指向 :58009/health 的 url 入口
+│   └── images/icon-{32,64,128,256}.png
 └── assets/
     ├── silero_vad/silero_vad_16k.safetensors
     └── demo_voices/*.wav, prompt_text

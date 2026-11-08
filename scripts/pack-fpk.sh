@@ -2,9 +2,11 @@
 # ==============================================================================
 # audio.cpp · fnOS native fpk —— 打包脚本（把 app 骨架 + app.tgz 组装成 .fpk）
 #
-# 自包含，不依赖官方 fnpack，也不依赖 fnos-apps 仓库。fpk 本质是 tar.gz：
-#   app.tgz / cmd/ / config/ / wizard/ / ui/ / *.sc / ICON*.PNG / manifest
-# manifest 的 checksum 字段 = app.tgz 的 md5（fnOS 安装时校验）。
+# 自包含，不依赖官方 fnpack，也不依赖 fnos-apps 仓库。fpk 本质是 tar.gz，顶层裸名条目
+# （不能带 ./ 前缀，否则 fnOS 包格式校验失败）：
+#   app.tgz / cmd/ / config/ / wizard/ / *.sc / ICON*.PNG / manifest
+# 桌面入口 ui/ 打进 app.tgz（安装后即 target/ui），不放顶层。
+# manifest 的 checksum 字段 = 最终 app.tgz 的 md5（fnOS 安装时校验）。
 #
 # 用法：
 #   scripts/pack-fpk.sh <app-dir> <app.tgz> [version] [platform] [out-dir]
@@ -39,35 +41,43 @@ APPNAME=$(grep '^appname' "$APP_DIR/manifest" | awk -F'=' '{print $2}' | tr -d '
 SIZE=$(stat -c%s "$APP_TGZ" 2>/dev/null || stat -f%z "$APP_TGZ")
 [[ "${SIZE:-0}" -ge 102400 ]] || err "app.tgz 异常偏小（${SIZE} 字节），疑似构建失败"
 
-CHECKSUM=$(md5sum "$APP_TGZ" | cut -d' ' -f1)
-info "打包 $APPNAME，app.tgz checksum=$CHECKSUM"
-
 # ── 组装包目录 ────────────────────────────────────────────────────────────────
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 PKG="$WORK/package"; mkdir -p "$PKG"
 
-cp "$APP_TGZ" "$PKG/app.tgz"
+# app.tgz = 安装后 target/ 的内容。fnOS 包格式硬性要求（对照真实可安装的 fan-control/motrix）：
+#   1) 桌面入口 ui/ 必须在 app.tgz 内（安装后即 target/ui，manifest 的 desktop_uidir 指它），
+#      不能放在 .fpk 顶层；
+#   2) tar 条目必须是裸名（manifest / app.tgz / bin/…），不能带 ./ 前缀，否则包格式校验失败。
+# 因此解开构建产出的 app.tgz、注入 ui/，再按裸名重新打包。
+APPWORK="$WORK/app"; mkdir -p "$APPWORK"
+tar -xzf "$APP_TGZ" -C "$APPWORK"
+mkdir -p "$APPWORK/ui/images"
+[[ -f "$APP_DIR/ui/config" ]] || err "缺少桌面入口配置：$APP_DIR/ui/config"
+cp "$APP_DIR/ui/config" "$APPWORK/ui/config"
+# ui/images/icon-{32,64,128,256}.png：ui/config 里 icon 用 {0} 占位尺寸，由 ICON*.PNG 生成
+gen_icon() {
+  local sz="$1" out="$APPWORK/ui/images/icon-$1.png"
+  if command -v magick >/dev/null 2>&1; then
+    magick "$APP_DIR/ICON_256.PNG" -resize "${sz}x${sz}" "$out"
+  elif command -v convert >/dev/null 2>&1; then
+    convert "$APP_DIR/ICON_256.PNG" -resize "${sz}x${sz}" "$out"
+  elif [[ "$sz" -le 64 ]]; then cp "$APP_DIR/ICON.PNG" "$out"
+  else cp "$APP_DIR/ICON_256.PNG" "$out"; fi
+}
+for sz in 32 64 128 256; do gen_icon "$sz"; done
+# 裸名重打包（cd 进目录用 * 通配，避免 ./ 前缀）
+( cd "$APPWORK" && tar -czf "$PKG/app.tgz" * )
+
+# checksum 必须对最终打进包的 app.tgz（已注入 ui/ 并重打包）计算，而非构建原始产物
+CHECKSUM=$(md5sum "$PKG/app.tgz" | cut -d' ' -f1)
+info "打包 $APPNAME，app.tgz checksum=$CHECKSUM"
+
 cp -a "$APP_DIR/cmd"     "$PKG/"
 cp -a "$APP_DIR/config"  "$PKG/"
 [[ -d "$APP_DIR/wizard" ]] && cp -a "$APP_DIR/wizard" "$PKG/"
-[[ -d "$APP_DIR/ui"     ]] && cp -a "$APP_DIR/ui"     "$PKG/"
 cp "$APP_DIR"/*.sc       "$PKG/" 2>/dev/null || true
 cp "$APP_DIR"/ICON*.PNG  "$PKG/"
-
-# ui/images/icon-{64,256}.png 由 ICON*.PNG 生成，避免仓库里存重复图标
-if [[ -d "$PKG/ui" ]]; then
-  mkdir -p "$PKG/ui/images"
-  if command -v magick >/dev/null 2>&1 || command -v convert >/dev/null 2>&1; then
-    IMG=$(command -v magick >/dev/null 2>&1 && echo "magick" || echo "convert")
-    cp "$PKG/ICON.PNG"     "$PKG/ui/images/icon-64.png"
-    cp "$PKG/ICON_256.PNG" "$PKG/ui/images/icon-256.png"
-    info "已生成 ui/images/icon-{64,256}.png"
-  else
-    # 无 ImageMagick 时直接用现成图标充当（尺寸已由 ICON*.PNG 保证）
-    cp "$PKG/ICON.PNG"     "$PKG/ui/images/icon-64.png"
-    cp "$PKG/ICON_256.PNG" "$PKG/ui/images/icon-256.png"
-  fi
-fi
 
 # ── 渲染 manifest（version / platform / checksum）────────────────────────────
 cp "$APP_DIR/manifest" "$PKG/manifest"
@@ -90,7 +100,7 @@ FPK_NAME="${APPNAME}_${VER}_${PLAT:-x86}.fpk"
 mkdir -p "$OUT_DIR"
 OUT_PATH="$(cd "$OUT_DIR" && pwd)/${FPK_NAME}"
 
-# ── 生成 .fpk（tar.gz）───────────────────────────────────────────────────────
-( cd "$PKG" && tar -czf "$OUT_PATH" ./* )
+# ── 生成 .fpk（tar.gz，条目用裸名，不能带 ./ 前缀）───────────────────────────
+( cd "$PKG" && tar -czf "$OUT_PATH" * )
 info "已生成：$OUT_PATH（$(du -h "$OUT_PATH" | cut -f1)）"
 echo "$OUT_PATH"
