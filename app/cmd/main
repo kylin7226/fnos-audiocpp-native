@@ -11,12 +11,19 @@ set -u
 
 APPNAME="${TRIM_APPNAME:-audiocpp}"
 APPDEST="${TRIM_APPDEST}"                 # target/ ：app.tgz 解压处，含 bin/audiocpp_server 与 .so
-PKGETC="${TRIM_PKGETC}"                   # etc/    ：渲染后的 server.json
+PKGETC="${TRIM_PKGETC}"                   # etc/    ：应用私有配置（保留）
 PKGVAR="${TRIM_PKGVAR}"                   # var/    ：日志与 PID（可写）
 PORT="${TRIM_SERVICE_PORT:-58009}"
 
+# 数据根目录：与 install_callback 一致——优先 data-share（文件管理 → 应用文件 可见），
+# 回退到 var/data。server.json 就渲染在这里，方便用户编辑。
+DATA_ROOT="${TRIM_DATA_SHARE_PATHS%%:*}"
+if [ -z "${DATA_ROOT}" ]; then
+    DATA_ROOT="${PKGVAR}/data"
+fi
+
 BIN="${APPDEST}/bin/audiocpp_server"
-CONFIG="${PKGETC}/server.json"
+CONFIG="${DATA_ROOT}/server.json"
 LOG_DIR="${PKGVAR}/logs"
 LOG_FILE="${LOG_DIR}/server.log"
 INFO_LOG="${PKGVAR}/info.log"

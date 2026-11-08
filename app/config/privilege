@@ -4,5 +4,5 @@
     },
     "username": "audiocpp",
     "groupname": "audiocpp",
-    "extra-groups": ["video", "render"]
+    "join-groups": ["video", "render"]
 }

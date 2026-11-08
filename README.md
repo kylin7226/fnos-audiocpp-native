@@ -6,7 +6,7 @@
 这是**原生（不用容器）**部署：fpk 里装的是编译好的 `audiocpp_server` 二进制，
 由 `cmd/main` 以应用专用用户直接拉起，**不经过 Docker / podman**。因此不存在
 "fpk 容器模板无法注入 `/dev/dri`" 的老问题——GPU 权限通过 `config/privilege` 的
-`extra-groups: ["video","render"]` 授予，原生进程直接访问宿主核显/独显。
+`join-groups: ["video","render"]` 授予，原生进程直接访问宿主核显/独显。
 
 > 纯 API 模式（`--no-ui`），不启动 WebUI；为 Home Assistant / Assist 提供本地中文
 > TTS(CosyVoice3) 与 STT(SenseVoice)，端口 **58009**。
@@ -45,7 +45,7 @@ fnos-audiocpp-native/
 ├── tools/update_moo_json.py          # moo.json 维护脚本（vendor 自上游，离线自包含）
 ├── app/                              # fpk 骨架（元数据，不含二进制）
 │   ├── manifest                      # appname/version/service_port=58009/checksum(打包时填)
-│   ├── config/privilege              # run-as=package + extra-groups video,render（GPU）
+│   ├── config/privilege              # run-as=package + join-groups video,render（GPU）
 │   ├── config/resource               # data-share(audiocpp) + port-config
 │   ├── cmd/main                      # 自包含 start/stop/status，PID 管理 audiocpp_server
 │   ├── cmd/install_init              # 预检 /dev/dri
@@ -148,7 +148,7 @@ CI 流程：checkout 本仓库 → checkout 上游 `0xShug0/audio.cpp`（锁定 
 │   ├── install_callback           #   渲染 server.json + 预置资产 + 后台下载模型
 │   ├── upgrade_callback           #   升级后重渲染配置
 │   └── uninstall_callback         #   卸载保留数据，只记日志
-├── config/privilege               # run-as=package + extra-groups video,render（GPU）
+├── config/privilege               # run-as=package + join-groups video,render（GPU）
 ├── config/resource                # data-share(audiocpp) + port-config
 ├── wizard/install                 # 安装向导
 │  ── 以下为系统建立的软链接 ──
@@ -206,9 +206,89 @@ audiocpp/
 ```
 
 要点：
-- 模型下载落点由 `etc/server.json` 的 `models_root` + 各 `models[].path` 决定，均在 `shares/audiocpp/models/` 下，下载后正好落在配置指定路径。
+- 配置文件 `server.json` 渲染在**共享目录** `shares/audiocpp/server.json`（文件管理 → 应用文件 可见、可直接编辑，卸载/升级保留、不覆盖你的修改）。模型下载落点由其中的 `models_root` + 各 `models[].path` 决定，均在 `shares/audiocpp/models/` 下。改完配置需重启应用生效：`/var/apps/audiocpp/cmd/main restart`。
 - **两个 logs 别混**：`var/logs/server.log` 是服务运行日志；`shares/audiocpp/logs/model-download.log` 是模型下载日志。
-- **卸载**删 `target/`、`etc/`、`var/`，**保留** `shares/audiocpp/`；**升级**换 `target/` 程序、重渲染 `etc/server.json`，`shares/` 数据不动。
+- **卸载**删 `target/`、`etc/`、`var/`，**保留** `shares/audiocpp/`（含 `server.json` 与模型）；**升级**换 `target/` 程序，`shares/` 数据与配置不动。
+
+## 4.2 验证模型服务是否正常提供服务
+
+以下命令在 **NAS 上 SSH 执行**（用 `127.0.0.1`）；从局域网其它机器执行则把 `127.0.0.1` 换成 NAS 的 IP。服务端口固定 `58009`，模型 id 为 `zh-tts`（CosyVoice3 合成）与 `zh-asr`（SenseVoice 识别）。
+
+**① 进程与健康检查**
+
+```bash
+# 应用进程状态：0=运行中，3=未运行
+/var/apps/audiocpp/cmd/main status; echo "exit=$?"
+
+# 健康端点：期望 HTTP 200
+curl -fsS -o /dev/null -w 'health=%{http_code}\n' http://127.0.0.1:58009/health
+```
+
+**② 模型是否下载就位**
+
+```bash
+# 从运行中的服务进程反推真实共享目录（server.json 所在目录即 DATA_ROOT）
+PID="$(pgrep -f 'audiocpp_server .*--port 58009' | head -1)"
+SHARE="$(dirname "$(tr '\0' '\n' < /proc/$PID/cmdline | grep -A1 -- '--config' | tail -1)")"
+echo "SHARE=$SHARE"
+
+cat  "$SHARE/logs/model-download.status"                          # 期望：done
+ls -l "$SHARE/models/CosyVoice3-GGUF/cosyvoice3-q8_0.gguf"        # 期望：约 2.26 GB
+ls -l "$SHARE/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf"  # 期望：约 254 MB
+tail -n 20 "$SHARE/logs/model-download.log"                       # 看是否走的 modelscope、有无失败
+```
+
+> `SHARE` 就是文件管理 → 应用文件 → audiocpp 那个目录。若进程没起来（拿不到 PID），直接在文件管理里打开该目录看 `logs/`、`models/` 即可。
+
+> 若 `status` 为 `running`/`failed` 或文件缺失，前台重跑下载（幂等、断点续传）：
+> `/var/apps/audiocpp/cmd/main download-models`
+
+**③ 已加载模型列表**
+
+```bash
+curl -s http://127.0.0.1:58009/v1/models | python3 -m json.tool   # 应能看到 zh-tts / zh-asr
+```
+
+**④ TTS 合成验证**（首次请求会 lazy-load 模型，可能等待数十秒）
+
+```bash
+curl -s http://127.0.0.1:58009/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"zh-tts","input":"你好，这是本地语音合成测试。","voice":"demo_3_woman","response_format":"wav"}' \
+  -o /tmp/tts.wav
+file /tmp/tts.wav      # 期望：RIFF (little-endian) data, WAVE audio
+ls -l /tmp/tts.wav     # 期望：非空（几十~几百 KB）
+```
+
+`voice` 可选 `demo_1_man` / `demo_2_man` / `demo_3_woman` / `demo_4_woman`（安装包已预置这些参考音频到 `shares/audiocpp/voices/`）。
+
+**⑤ STT 识别验证**（把上一步合成的 wav 回灌，形成 TTS→STT 闭环）
+
+```bash
+curl -s http://127.0.0.1:58009/v1/audio/transcriptions \
+  -F model=zh-asr -F file=@/tmp/tts.wav -F language=zh | python3 -m json.tool
+# 期望：返回转写文本，内容与「你好，这是本地语音合成测试。」大致一致
+```
+
+**⑥ 运行日志 / GPU 后端**
+
+```bash
+tail -n 50 /var/apps/audiocpp/var/logs/server.log    # 或 var/ 下的 server.log
+# 关注：Vulkan 后端是否初始化成功、有无模型加载报错
+```
+
+**判定标准**：`/health` 返回 200、`/v1/models` 列出 `zh-tts`/`zh-asr`、④ 生成合法 WAV、⑤ 能转写回相近文本 —— 四项都通过即说明模型服务已正常提供 TTS/STT。
+
+**常见问题**
+
+| 现象 | 排查 |
+| --- | --- |
+| `/health` 连不上 | `cmd/main status` 是否为 3；看 `server.log` 启动报错（端口占用/配置路径/缺 .so） |
+| TTS/STT 返回错误或空 | 模型是否 `done` 且文件大小正确；`server.log` 里是否 lazy-load 失败 |
+| 合成很慢/首次超时 | 首次请求要加载 2.26 GB 模型到显存/内存，属正常；后续请求变快 |
+| 识别不到 GPU、退回慢 | `server.log` 搜 Vulkan；确认 `/dev/dri` 存在、核显驱动已加载、应用用户在 render/video 组 |
+
+**Home Assistant 侧**：TTS/STT 集成指向 `http://<NAS_IP>:58009`，模型分别填 `zh-tts` / `zh-asr`，Voice 填 `demo_3_woman`。
 
 ## 5. 本地手动构建（不用 CI）
 
@@ -234,7 +314,7 @@ bash scripts/pack-fpk.sh app dist/app.tgz 0.9.4 x86 dist
 | --- | --- | --- | --- |
 | 安装入口 | 应用中心 GUI | Docker 管理 → 项目 | systemd 服务 |
 | 运行时 | 宿主原生进程 | 容器 | 宿主原生进程 |
-| GPU | extra-groups 授权 /dev/dri | devices + group_add | 用户在 render/video 组 |
+| GPU | join-groups 授权 /dev/dri | devices + group_add | 用户在 render/video 组 |
 | 升级 | 应用中心一键 | 换镜像 tag | 重跑构建脚本 |
 | 编译 | CI 编好 | 不用编（用镜像） | 在 fnOS 上编 |
 

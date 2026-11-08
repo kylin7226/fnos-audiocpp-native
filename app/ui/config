@@ -2,7 +2,7 @@
     ".url": {
         "audiocpp.Application": {
             "title": "audio.cpp",
-            "icon": "images/icon-{0}.png",
+            "icon": "images/icon_{0}.png",
             "type": "url",
             "protocol": "http",
             "port": "58009",

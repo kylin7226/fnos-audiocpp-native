@@ -39,12 +39,18 @@ if [ -d "${APPDEST}/assets/demo_voices" ] && [ -z "$(ls -A "${DATA_ROOT}/voices"
     cp -r "${APPDEST}/assets/demo_voices/." "${DATA_ROOT}/voices/" && log "seeded demo_voices"
 fi
 
-# ── 渲染 server.json：把模板里的 __DATA_ROOT__ 换成真实共享路径
+# ── 渲染 server.json：把模板里的 __DATA_ROOT__ 换成真实共享路径。
+#    配置写入 DATA_ROOT（文件管理 → 应用文件 可见），方便用户直接编辑。
 TEMPLATE="${APPDEST}/etc/server.json.template"
+CONFIG="${DATA_ROOT}/server.json"
 if [ -f "${TEMPLATE}" ]; then
-    mkdir -p "${PKGETC}"
-    sed "s#__DATA_ROOT__#${DATA_ROOT}#g" "${TEMPLATE}" > "${PKGETC}/server.json"
-    log "rendered ${PKGETC}/server.json"
+    # 已存在则保留用户修改，不覆盖（升级/重装幂等）
+    if [ -f "${CONFIG}" ]; then
+        log "config exists, keep user edits: ${CONFIG}"
+    else
+        sed "s#__DATA_ROOT__#${DATA_ROOT}#g" "${TEMPLATE}" > "${CONFIG}"
+        log "rendered ${CONFIG}"
+    fi
 else
     echo "错误：找不到 server.json 模板 ${TEMPLATE}，配置未生成。" > "${NOTE}"
     exit 1
@@ -67,10 +73,10 @@ if [ -x "${PROVISION}" ] && [ -x "${APPDEST}/bin/audiocpp_model_manager" ]; then
     if [ -n "${TRIM_USERNAME:-}" ] && command -v setsid >/dev/null 2>&1 \
        && command -v su >/dev/null 2>&1 && [ "$(id -un)" != "${TRIM_USERNAME}" ]; then
         setsid su -s /bin/bash "${TRIM_USERNAME}" -c \
-            "exec bash '${PROVISION}' '${PKGETC}/server.json' '${APPDEST}/bin' '${LOG_DIR}'" \
+            "exec bash '${PROVISION}' '${CONFIG}' '${APPDEST}/bin' '${LOG_DIR}'" \
             >>"${DL_LOG}" 2>&1 </dev/null &
     else
-        setsid bash "${PROVISION}" "${PKGETC}/server.json" "${APPDEST}/bin" "${LOG_DIR}" \
+        setsid bash "${PROVISION}" "${CONFIG}" "${APPDEST}/bin" "${LOG_DIR}" \
             >>"${DL_LOG}" 2>&1 </dev/null &
     fi
     log "model download kicked off in background → ${DL_LOG}"

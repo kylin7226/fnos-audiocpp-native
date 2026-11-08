@@ -114,6 +114,18 @@ jobs:
             debian:12 \
             bash /work/scripts/build-audiocpp.sh
 
+      # 用官方 fnpack 产包（手搓 tar 会被 fnOS 以“应用包格式不符合系统版本要求”拒装）。
+      # pack-fpk.sh 只负责组装 fnpack 工程目录并调用它；checksum/包内布局全由 fnpack 处理。
+      - name: Fetch fnpack
+        run: |
+          set -euo pipefail
+          FNPACK_URL="${FNPACK_URL:-https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64}"
+          curl -fsSL --retry 3 -o /usr/local/bin/fnpack "$FNPACK_URL"
+          chmod +x /usr/local/bin/fnpack
+          fnpack --help | head -2
+        env:
+          FNPACK_URL: https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64
+
       - name: Pack .fpk
         run: |
           # 上一步 docker 以 root 身份创建 dist/ 和 app.tgz，而本步以非 root 的 runner
