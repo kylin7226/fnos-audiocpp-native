@@ -30,9 +30,24 @@
       "icon_url": "https://raw.githubusercontent.com/kylin7226/fnos-audiocpp-native/main/app/ICON_256.PNG",
       "readme_url": "https://raw.githubusercontent.com/kylin7226/fnos-audiocpp-native/main/README.md",
       "download_count": 0,
-      "version": "0.9.4",
+      "version": "0.9.4-002",
       "changelog": "",
-      "releases": {}
+      "releases": {
+        "0.9.4-002": {
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/kylin7226/fnos-audiocpp-native/releases/download/v0.9.4-002/audiocpp_0.9.4-002_x86.fpk",
+              "sha256": "ff390663b93ab9da517db715e9beec7f641dd722fa8a6571bfdd0ba4146d8c39",
+              "size": 100357358,
+              "size_mb": 95.71
+            }
+          },
+          "changelog": "",
+          "updated_at": "2026-11-08T19:18:35+08:00"
+        }
+      },
+      "download_url": "https://github.com/kylin7226/fnos-audiocpp-native/releases/download/v0.9.4-002/audiocpp_0.9.4-002_x86.fpk",
+      "sha256": "ff390663b93ab9da517db715e9beec7f641dd722fa8a6571bfdd0ba4146d8c39"
     }
   }
 }
