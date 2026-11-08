@@ -92,8 +92,12 @@ jobs:
           path: audio.cpp-src
           fetch-depth: 1
 
-      # 关键：在 debian:12 容器里编译，产物链接 bookworm 的 glibc 2.36，
-      # 才能在 fnOS(Debian 12) 上运行（官方 Ubuntu 24.04 二进制 glibc 2.39 跑不了）。
+      # 关键：在 debian:12 容器里编译。容器 glibc 2.36 与 fnOS 一致，但 audio.cpp
+      # 要求 GCC≥13（bookworm 只有 gcc-12，earshot_vad 的 avx2 pragma 会编译失败），
+      # 故 build-audiocpp.sh 在容器内装 conda-forge gcc-13——它自带 glibc 2.34 的
+      # sysroot，产物只要求 GLIBC≤2.34（<fnOS 2.36），并把 conda 的 libstdc++/libgcc_s/
+      # libgomp 打进 bin/（rpath=$ORIGIN）以满足 GLIBCXX_3.4.32。CI 走官方 conda-forge
+      # 通道（runner 在海外，快）；本地 CN 可用 CONDA_CHANNEL/MINICONDA_URL 切清华镜像。
       # 采用官方 linux-vulkan-**portable** 配方（NATIVE_CPU=OFF + CPU_ALL_VARIANTS=ON），
       # 避免按 runner CPU 做 -march=native 导致在用户 NAS 上 SIGILL。
       - name: Build audiocpp (Vulkan) in debian:12

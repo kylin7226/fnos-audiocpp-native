@@ -86,10 +86,21 @@ fnos-audiocpp-native/
   再触发 `Update moo.json` 写回市场索引。兼容不带修订号的老 tag（`v0.9.4` 视为 `0.9.4-000`）。
 
 CI 流程：checkout 本仓库 → checkout 上游 `0xShug0/audio.cpp`（锁定 release tag，不拉子模块，
-纯 API 用不到 WebUI 前端）→ `docker run debian:12` 跑 `build-audiocpp.sh`（bookworm 默认 gcc-12 + Vulkan +
-portable + `DEPLOYMENT_BUILD=ON`）产出 `app.tgz` → `pack-fpk.sh` 产出 `.fpk`。
+纯 API 用不到 WebUI 前端）→ `docker run debian:12` 跑 `build-audiocpp.sh` 产出 `app.tgz`
+→ `pack-fpk.sh` 产出 `.fpk`。
 
-> 首次编译约 20–60 分钟（audio.cpp 体量大，Vulkan + CPU 多 ISA 变体）。属正常。
+> **为什么在 debian:12 里还要装 conda gcc-13**：audio.cpp 文档硬性要求 GCC≥13，且
+> `earshot_vad` 的 `#pragma GCC target("avx2")` + always_inline intrinsic 在 bookworm 自带的
+> gcc-12 上会 “inlining failed … target specific option mismatch” 编译失败；而 bookworm 源里
+> 没有 gcc-13（trixie/sid 才有，但其 glibc 2.40 会破坏 fnOS 兼容）。脚本改用 conda-forge 的
+> gcc-13——它自带 **glibc 2.34** 的 sysroot，产物只要求 `GLIBC≤2.34`（< fnOS 2.36），既满足
+> gcc-13 又守住 glibc 下限。构建脚本还会：把新版 **Vulkan-Headers(v1.3.290)** 与 **SPIRV-Headers**
+> 装进 conda sysroot（bookworm 的 1.3.239 太旧，缺 `vk::LayerSettingEXT`/`spv::`），并把 conda 的
+> `libstdc++.so.6`/`libgcc_s.so.1`/`libgomp.so.1` 打进 `bin/`、用 patchelf 把 RPATH 规整为纯
+> `$ORIGIN`（产物要 `GLIBCXX_3.4.32`，高于 fnOS 系统的 `3.4.30`，必须随包携带）。
+> CI 走官方 conda-forge 通道；本地 CN 可设 `CONDA_CHANNEL`/`MINICONDA_URL` 切清华镜像加速。
+
+> 首次编译约 20–60 分钟（audio.cpp 体量大，Vulkan + CPU 多 ISA 变体，外加一次 conda 工具链下载）。属正常。
 
 ## 4. 在 fnOS 上安装
 
