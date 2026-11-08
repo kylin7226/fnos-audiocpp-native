@@ -6,6 +6,11 @@ name: Update moo.json
 # 版本号以包内 manifest 为准；只处理正式发布（prerelease 不进索引）。
 # 维护脚本已 vendor 到 tools/update_moo_json.py（离线自包含），取不到时再回退上游。
 
+# 注意：Release 由 build-fpk.yml 用 GITHUB_TOKEN（softprops）创建，而 GitHub 不会为
+# GITHUB_TOKEN 触发的事件再启动新 workflow（仅 workflow_dispatch/repository_dispatch 例外），
+# 所以下面的 `on: release` 对自动发布的 Release 实际不会触发。真正的自动链路由 build-fpk.yml
+# 通过 workflow_call 直接调用本 workflow 完成（同一 run 内调用，不受该限制）。
+# `on: release` 与 workflow_dispatch 保留，用于手动补跑历史 Release。
 on:
   release:
     types: [published]
@@ -14,6 +19,12 @@ on:
       tag:
         description: "要同步的 release tag（留空=用触发本次运行的 tag）"
         required: false
+  workflow_call:
+    inputs:
+      tag:
+        description: "要同步的 release tag（由 build-fpk.yml 传入）"
+        type: string
+        required: true
 
 permissions:
   contents: write
@@ -25,7 +36,7 @@ concurrency:
 
 jobs:
   update:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call' || github.event.release.prerelease == false }}
     runs-on: ubuntu-latest
     env:
       FPK_GLOB: "*.fpk"

@@ -42,6 +42,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      kind: ${{ steps.vars.outputs.kind }}
     steps:
       - name: Checkout packager repo
         uses: actions/checkout@v4
@@ -137,3 +139,13 @@ jobs:
           name: audio.cpp fnOS fpk ${{ steps.vars.outputs.version }}
           files: dist/*.fpk
           generate_release_notes: true
+
+  # 上面的 Release 由 softprops 用 GITHUB_TOKEN 创建，而 GitHub 不会为 GITHUB_TOKEN 触发的
+  # 事件再启动新 workflow，故 moo-json.yml 的 `on: release` 对自动发布永不触发。这里在同一
+  # run 内用 workflow_call 直接调用它写回市场索引——链式调用不受该限制。仅正式 Release 触发。
+  update-moo:
+    needs: build
+    if: needs.build.outputs.kind == 'release'
+    uses: ./.github/workflows/moo-json.yml
+    with:
+      tag: ${{ github.ref_name }}
