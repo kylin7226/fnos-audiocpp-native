@@ -111,6 +111,81 @@ portable + `DEPLOYMENT_BUILD=ON`）产出 `app.tgz` → `pack-fpk.sh` 产出 `.f
 
 **卸载**：系统删除程序与配置，但**保留**共享目录里的模型与参考音频（避免误删 GB 级文件）。
 
+### 4.1 安装后的 fnOS 目录结构
+
+分两套：**程序目录**（升级替换）与**数据目录**（各 `@app*` 卷，卸载保留）。`vol1` 为安装时所选存储卷，可能是 `vol2` 等。
+
+```
+/var/apps/audiocpp/                # 应用主目录（元数据 + 生命周期脚本）
+├── manifest                       # 身份证：appname/version/service_port=58009/checksum
+├── ICON.PNG  ICON_256.PNG         # 图标
+├── audiocpp.sc                    # 58009 端口转发声明
+├── cmd/                           # 应用中心调用的脚本
+│   ├── main                       #   start / stop / status / download-models
+│   ├── install_init               #   预检 /dev/dri
+│   ├── install_callback           #   渲染 server.json + 预置资产 + 后台下载模型
+│   ├── upgrade_callback           #   升级后重渲染配置
+│   └── uninstall_callback         #   卸载保留数据，只记日志
+├── config/privilege               # run-as=package + extra-groups video,render（GPU）
+├── config/resource                # data-share(audiocpp) + port-config
+├── ui/config                      # 桌面入口（→ :58009/health）
+├── wizard/install                 # 安装向导
+│  ── 以下为系统建立的软链接 ──
+├── target -> /vol1/@appcenter/audiocpp    # app.tgz 解压处（TRIM_APPDEST）
+├── etc    -> /vol1/@appconf/audiocpp      # 渲染后的 server.json（TRIM_PKGETC，持久）
+├── var    -> /vol1/@appdata/audiocpp      # 运行日志 / PID（TRIM_PKGVAR）
+├── tmp    -> /vol1/@apptemp/audiocpp
+├── home   -> /vol1/@apphome/audiocpp
+└── shares/audiocpp -> /vol1/@appshare/audiocpp   # 模型/音频/下载日志（DATA_ROOT）
+```
+
+**程序载荷 `target/`**（= `@appcenter/audiocpp`，随 app.tgz 解压）：
+
+```
+target/
+├── bin/
+│   ├── audiocpp_server            # 主服务
+│   ├── audiocpp_cli
+│   ├── audiocpp_model_manager     # 模型下载器（内置 BoringSSL）
+│   ├── provision-models.sh        # 按 server.json 下载缺失模型
+│   └── *.so*                      # 依赖库 + ggml-cpu-*.so（rpath=$ORIGIN，须同目录）
+├── etc/server.json.template       # 配置模板（含 __DATA_ROOT__ 占位）
+└── assets/
+    ├── silero_vad/silero_vad_16k.safetensors
+    └── demo_voices/*.wav, prompt_text
+```
+
+**配置 `etc/`**（= `@appconf/audiocpp`，持久）：`server.json`（由模板渲染）。
+
+**运行数据 `var/`**（= `@appdata/audiocpp`）：
+
+```
+var/
+├── audiocpp.pid                   # main 写的 PID
+├── info.log                       # 启停日志
+└── logs/server.log                # 服务运行日志（--log-file）
+```
+
+**共享数据 `shares/audiocpp/`**（= `@appshare/audiocpp`，即 DATA_ROOT，**卸载保留**；文件管理 →「应用文件」可见）：
+
+```
+audiocpp/
+├── models/
+│   ├── CosyVoice3-GGUF/cosyvoice3-q8_0.gguf                        # 自动下载 ~2.26 GB
+│   ├── SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf  # 自动下载 ~254 MB
+│   └── silero_vad/silero_vad_16k.safetensors                       # 安装包预置
+├── voices/                                                        # demo 参考音频，安装包预置
+│   └── demo_1_man.wav … prompt_text
+└── logs/
+    ├── model-download.log         # 下载进度
+    └── model-download.status      # running / done / failed
+```
+
+要点：
+- 模型下载落点由 `etc/server.json` 的 `models_root` + 各 `models[].path` 决定，均在 `shares/audiocpp/models/` 下，下载后正好落在配置指定路径。
+- **两个 logs 别混**：`var/logs/server.log` 是服务运行日志；`shares/audiocpp/logs/model-download.log` 是模型下载日志。
+- **卸载**删 `target/`、`etc/`、`var/`，**保留** `shares/audiocpp/`；**升级**换 `target/` 程序、重渲染 `etc/server.json`，`shares/` 数据不动。
+
 ## 5. 本地手动构建（不用 CI）
 
 需要 Docker（用于提供 debian:12 构建环境）：
