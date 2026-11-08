@@ -98,10 +98,27 @@ stop_process() {
     return 0
 }
 
+# 前台重跑模型下载（安装时后台下载失败/中断后的恢复入口，幂等）：
+#   /var/apps/audiocpp/cmd/main download-models
+provision_models() {
+    local script="${APPDEST}/bin/provision-models.sh"
+    if [ ! -x "${script}" ]; then
+        echo "缺少下载器：${script}" >&2; return 1
+    fi
+    if [ ! -f "${CONFIG}" ]; then
+        echo "配置未生成：${CONFIG}" >&2; return 1
+    fi
+    local log_dir; log_dir="$(dirname "${LOG_FILE}")"
+    echo "按 ${CONFIG} 下载缺失模型，进度见 ${log_dir}/model-download.log"
+    bash "${script}" "${CONFIG}" "${APPDEST}/bin" "${log_dir}"
+    return $?
+}
+
 case "${1:-}" in
     start)  start_process; exit $? ;;
     stop)   stop_process;  exit 0 ;;
     status) if is_running; then exit 0; else exit 3; fi ;;
     restart) stop_process; start_process; exit $? ;;
+    download-models) provision_models; exit $? ;;
     *)      exit 1 ;;
 esac

@@ -51,10 +51,32 @@ else
 fi
 
 # ── 属主修正：确保应用用户可读写数据目录（安装脚本可能以 root 运行）
+#    必须在后台下载之前完成，好让模型/暂存目录归应用用户所有。
 if [ -n "${TRIM_USERNAME:-}" ]; then
     chown -R "${TRIM_USERNAME}:${TRIM_GROUPNAME:-${TRIM_USERNAME}}" "${DATA_ROOT}" 2>/dev/null || true
     chown -R "${TRIM_USERNAME}:${TRIM_GROUPNAME:-${TRIM_USERNAME}}" "${PKGETC}" "${PKGVAR}" 2>/dev/null || true
 fi
 
-echo "audio.cpp 已初始化。请把 GGUF 模型放入：${DATA_ROOT}/models/（详见安装向导）。" > "${NOTE}"
+# ── 按初始化配置(server.json)后台下载缺失模型（约 2.5 GB，从 HuggingFace）
+#    setsid 脱离安装脚本会话，避免安装返回后被进程组清理杀掉；失败不影响安装。
+PROVISION="${APPDEST}/bin/provision-models.sh"
+LOG_DIR="${DATA_ROOT}/logs"
+mkdir -p "${LOG_DIR}" 2>/dev/null || true
+if [ -x "${PROVISION}" ] && [ -x "${APPDEST}/bin/audiocpp_model_manager" ]; then
+    DL_LOG="${LOG_DIR}/model-download.log"
+    if [ -n "${TRIM_USERNAME:-}" ] && command -v setsid >/dev/null 2>&1 \
+       && command -v su >/dev/null 2>&1 && [ "$(id -un)" != "${TRIM_USERNAME}" ]; then
+        setsid su -s /bin/bash "${TRIM_USERNAME}" -c \
+            "exec bash '${PROVISION}' '${PKGETC}/server.json' '${APPDEST}/bin' '${LOG_DIR}'" \
+            >>"${DL_LOG}" 2>&1 </dev/null &
+    else
+        setsid bash "${PROVISION}" "${PKGETC}/server.json" "${APPDEST}/bin" "${LOG_DIR}" \
+            >>"${DL_LOG}" 2>&1 </dev/null &
+    fi
+    log "model download kicked off in background → ${DL_LOG}"
+    echo "audio.cpp 已初始化，正在后台下载模型（约 2.5 GB）到 ${DATA_ROOT}/models/。进度见 ${DL_LOG}；下载完成前 TTS/STT 请求会失败，请稍候。" > "${NOTE}"
+else
+    log "provision script or model_manager missing; skip auto-download"
+    echo "audio.cpp 已初始化。未找到下载器，请手动把 GGUF 模型放入：${DATA_ROOT}/models/（详见安装向导）。" > "${NOTE}"
+fi
 exit 0

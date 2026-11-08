@@ -57,6 +57,7 @@ fnos-audiocpp-native/
 │   ├── audiocpp.sc                   # 58009 端口转发声明
 │   ├── ICON.PNG / ICON_256.PNG       # 应用图标
 ├── payload/etc/server.json.template  # 进 app.tgz；install 时把 __DATA_ROOT__ 换成共享路径
+├── payload/bin/provision-models.sh   # 进 app.tgz；按 server.json 自动下载缺失模型
 └── scripts/
     ├── build-audiocpp.sh             # 在 debian:12 内编译（portable 配方）并组装 app.tgz
     └── pack-fpk.sh                   # 骨架 + app.tgz → .fpk（自包含，不依赖 fnpack）
@@ -83,14 +84,21 @@ portable + `DEPLOYMENT_BUILD=ON`）产出 `app.tgz` → `pack-fpk.sh` 产出 `.f
 ## 4. 在 fnOS 上安装
 
 1. 应用中心 → 手动安装 → 从电脑上传 → 选 `.fpk` → 确认来源 → 安装。
-2. 安装向导会提示模型放置位置；系统创建共享目录 **audiocpp**（文件管理 → 应用文件）。
-3. 把模型放进去（纯 API 无运行时下载）：
-   ```
-   audiocpp/models/CosyVoice3-GGUF/cosyvoice3-q8_0.gguf
-   audiocpp/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf
-   ```
-   `models/silero_vad/` 的 VAD 权重与 `voices/` 的 demo 参考音频**已由安装包预置**，
-   无需手动放（可自行增删音色）。
+2. 安装时 `install_callback` 会：解析数据共享目录（文件管理 → 应用文件里的 **audiocpp**）、
+   预置 silero VAD 权重与 demo 参考音频、按 `DATA_ROOT` 渲染出 `server.json`。
+3. **模型自动下载**：安装完成后，`install_callback` 会以应用用户身份在后台（`setsid`）运行
+   `bin/provision-models.sh`，**读取渲染好的 `server.json`**，对其中声明但文件缺失的模型调用随包的
+   `audiocpp_model_manager` 从 HuggingFace 下载对应 GGUF 包：
+   | server.json family | 包 id | 落点（= 配置的 `path`） | 大小 |
+   | --- | --- | --- | --- |
+   | `cosyvoice3` | `cosyvoice3_q8_0` | `models/CosyVoice3-GGUF/cosyvoice3-q8_0.gguf` | ~2.26 GB |
+   | `sense_asr` | `sensevoice_small_q8` | `models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf` | ~254 MB |
+
+   下载落点与 `server.json` 里配置的 `path` 完全一致，下完即可被 lazy-load 直接使用。
+   - 进度/状态：`audiocpp/logs/model-download.log`、`audiocpp/logs/model-download.status`（`running`/`done`/`failed`）。
+   - **下载完成前 TTS/STT 请求会失败**（模型还没就位），属正常，等 `status=done` 即可。
+   - 中断/失败可 SSH 前台续跑（幂等，只补缺失文件）：`/var/apps/audiocpp/cmd/main download-models`。
+   - 想离线预置：手动把上表两个 GGUF 放到对应路径即可，脚本检测到已存在会跳过下载。
 4. 在应用中心启动 audio.cpp；验证：
    ```
    curl -s http://<fnOS IP>:58009/health
@@ -139,6 +147,9 @@ bash scripts/pack-fpk.sh app dist/app.tgz 0.9.4 x86 dist
 - fpk 只支持单端口（`service_port`），本应用固定 58009。
 - `platform = x86`（AMD/Intel 核显 Vulkan）。ARM fnOS 需另编 `arm` 平台包。
 - 首次 TTS/STT 请求触发 lazy 加载，等待数十秒属正常。
+- **模型自动下载需要 NAS 能访问 HuggingFace**（`huggingface.co`，约 2.5 GB）。网络受限/被墙时
+  后台下载会失败（`model-download.status=failed`），此时改为手动把两个 GGUF 放到对应路径，
+  或配置好代理后 `cmd/main download-models` 续跑。下载器不依赖系统 curl/OpenSSL（内置 BoringSSL）。
 - 构建在 GitHub 公共 runner 上，源码与产物会经过 CI 环境；介意可自建 runner。
 
 ## 8. 作为 Moo 应用商店的应用源

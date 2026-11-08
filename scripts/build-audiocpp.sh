@@ -14,7 +14,8 @@
 #   AUDIOCPP_VERSION  编进二进制的版本串（-DAUDIOCPP_VERSION），默认 dev
 #
 # 产出：app.tgz —— 解压到 fnOS 的 TRIM_APPDEST(target/) 后含：
-#   bin/audiocpp_server, bin/audiocpp_cli, bin/*.so*
+#   bin/audiocpp_server, bin/audiocpp_cli, bin/audiocpp_model_manager, bin/*.so*
+#   bin/provision-models.sh（按 server.json 自动下载缺失模型）
 #   etc/server.json.template
 #   assets/silero_vad/silero_vad_16k.safetensors
 #   assets/demo_voices/*
@@ -71,12 +72,14 @@ cmake -S "$SRC_DIR" -B "$SRC_DIR/build" \
     -DENGINE_BUILD_TESTS=OFF \
     -DENGINE_BUILD_WARMBENCH=OFF
 
-log "编译 audiocpp_server / audiocpp_cli（-j$JOBS）"
+log "编译 audiocpp_server / audiocpp_cli / audiocpp_model_manager（-j$JOBS）"
 cmake --build "$SRC_DIR/build" --parallel "$JOBS" \
     --target audiocpp_server \
-    --target audiocpp_cli
+    --target audiocpp_cli \
+    --target audiocpp_model_manager
 
 [[ -x "$SRC_DIR/build/bin/audiocpp_server" ]] || die "构建产物缺失 audiocpp_server"
+[[ -x "$SRC_DIR/build/bin/audiocpp_model_manager" ]] || die "构建产物缺失 audiocpp_model_manager（模型自动下载需要它）"
 
 # 校验：产物应链接 bookworm 的 glibc，且不含高于 2.36 的 GLIBC 符号版本
 log "校验 glibc 符号版本（应 ≤ GLIBC_2.36）"
@@ -95,9 +98,15 @@ trap 'rm -rf "$STAGE"' EXIT
 
 # 3.1 二进制 + 所有 .so（rpath=$ORIGIN，必须同目录）
 mkdir -p "$STAGE/bin"
-cp -f "$SRC_DIR/build/bin/audiocpp_server" "$SRC_DIR/build/bin/audiocpp_cli" "$STAGE/bin/"
+cp -f "$SRC_DIR/build/bin/audiocpp_server" \
+      "$SRC_DIR/build/bin/audiocpp_cli" \
+      "$SRC_DIR/build/bin/audiocpp_model_manager" "$STAGE/bin/"
 find "$SRC_DIR/build" -name '*.so*' -exec cp -Pf {} "$STAGE/bin/" \;
-chmod 755 "$STAGE/bin/audiocpp_server" "$STAGE/bin/audiocpp_cli"
+chmod 755 "$STAGE/bin/audiocpp_server" "$STAGE/bin/audiocpp_cli" "$STAGE/bin/audiocpp_model_manager"
+
+# 3.1b 模型自动下载脚本（install_callback 后台调用 / main download-models 前台调用）
+cp -f "$REPO_DIR/payload/bin/provision-models.sh" "$STAGE/bin/"
+chmod 755 "$STAGE/bin/provision-models.sh"
 
 # 3.2 配置模板（install_callback 会渲染 __DATA_ROOT__）
 mkdir -p "$STAGE/etc"
