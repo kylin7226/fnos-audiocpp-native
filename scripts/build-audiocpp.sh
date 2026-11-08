@@ -19,8 +19,8 @@
 #   OUT_TGZ   输出的 app.tgz 路径，默认 $REPO_DIR/dist/app.tgz
 #   JOBS      并行编译数，默认 nproc
 #   AUDIOCPP_VERSION  编进二进制的版本串（-DAUDIOCPP_VERSION），默认 dev
-#   CONDA_CHANNEL     conda 通道，默认 conda-forge（CI 官方）；本地 CN 可设清华镜像
-#   MINICONDA_URL     Miniconda 下载地址，默认官方；本地 CN 可设清华镜像
+#   AUDIOCPP_CONDA_CHANNEL   conda 通道，默认 conda-forge（CI 官方）；本地 CN 可设清华镜像
+#   AUDIOCPP_MINICONDA_URL   Miniconda 下载地址，默认官方；本地 CN 可设清华镜像
 #   VULKAN_HEADERS_VERSION  默认 v1.3.290（bookworm 的 239 太旧）
 #
 # 产出：app.tgz —— 解压到 fnOS 的 TRIM_APPDEST(target/) 后含：
@@ -64,26 +64,31 @@ apt-get install -y --no-install-recommends \
 command -v glslc >/dev/null || die "glslc 安装失败"
 command -v patchelf >/dev/null || die "patchelf 安装失败"
 
-# ── 1a. conda-forge gcc-13（CI 用官方通道；本地 CN 可设 CONDA_CHANNEL 走清华镜像）──
+# ── 1a. conda-forge gcc-13（CI 用官方通道；本地 CN 可设 AUDIOCPP_CONDA_CHANNEL 走清华）──
 # --override-channels 绕开 conda 默认通道的 ToS 门槛，只用 conda-forge。
-CONDA_PREFIX="${CONDA_PREFIX:-/opt/conda}"
-CONDA_CHANNEL="${CONDA_CHANNEL:-conda-forge}"
-MINICONDA_URL="${MINICONDA_URL:-https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh}"
-CC_BIN="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-gcc"
-CXX_BIN="$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-g++"
+# 切记：自定义变量不能叫 CONDA_CHANNEL/CONDA_CHANNELS——conda 把 CONDA_* 环境变量当成
+# 自己的配置，安装器会因 channel/channels 别名冲突报 MultipleKeysError 而失败。
+CONDA_DIR="${AUDIOCPP_CONDA_DIR:-/opt/conda}"
+CONDA_CHANNEL_URL="${AUDIOCPP_CONDA_CHANNEL:-conda-forge}"
+MINICONDA_URL="${AUDIOCPP_MINICONDA_URL:-https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh}"
+CC_BIN="$CONDA_DIR/bin/x86_64-conda-linux-gnu-gcc"
+CXX_BIN="$CONDA_DIR/bin/x86_64-conda-linux-gnu-g++"
 if [[ -x "$CXX_BIN" ]] && "$CXX_BIN" -dumpversion 2>/dev/null | grep -q '^13'; then
   log "复用已存在的 conda gcc-13（$("$CXX_BIN" --version | head -1)）"
 else
-  log "安装 conda-forge gcc-13（channel=${CONDA_CHANNEL}）"
+  log "安装 conda-forge gcc-13（channel=${CONDA_CHANNEL_URL}）"
+  # 清掉可能干扰安装器的 CONDA_* 配置变量（构建容器里本就不该有）
+  unset CONDA_CHANNEL CONDA_CHANNELS CONDA_PREFIX CONDA_DEFAULT_ENV 2>/dev/null || true
   curl -fsSL "$MINICONDA_URL" -o /tmp/miniconda.sh || die "下载 Miniconda 失败：$MINICONDA_URL"
-  bash /tmp/miniconda.sh -b -u -p "$CONDA_PREFIX" >/dev/null && rm -f /tmp/miniconda.sh
-  case "$CONDA_CHANNEL" in http://*) SSLV=false ;; *) SSLV=true ;; esac
-  printf 'ssl_verify: %s\nchannel_priority: flexible\n' "$SSLV" > "$CONDA_PREFIX/.condarc"
-  conda install -y --override-channels -c "$CONDA_CHANNEL" \
+  bash /tmp/miniconda.sh -b -u -p "$CONDA_DIR" >/dev/null && rm -f /tmp/miniconda.sh
+  export PATH="$CONDA_DIR/bin:$PATH"   # 刚装完 conda 还不在 PATH，必须先导出再用
+  case "$CONDA_CHANNEL_URL" in http://*) SSLV=false ;; *) SSLV=true ;; esac
+  printf 'ssl_verify: %s\nchannel_priority: flexible\n' "$SSLV" > "$CONDA_DIR/.condarc"
+  conda install -y --override-channels -c "$CONDA_CHANNEL_URL" \
       gcc_linux-64=13 gxx_linux-64=13 sysroot_linux-64 >/dev/null || die "conda 安装 gcc-13 失败"
   conda clean -afy >/dev/null 2>&1 || true
 fi
-export PATH="$CONDA_PREFIX/bin:$PATH"
+export PATH="$CONDA_DIR/bin:$PATH"
 [[ -x "$CXX_BIN" ]] || die "conda g++ 不存在：$CXX_BIN"
 SYSROOT="$("$CXX_BIN" -print-sysroot)"
 log "conda gcc-13：$("$CXX_BIN" --version | head -1)"
@@ -181,9 +186,9 @@ chmod 755 "$STAGE/bin/audiocpp_server" "$STAGE/bin/audiocpp_cli" "$STAGE/bin/aud
 # 而产物要 3.4.32）。这些库自身只要求 GLIBC≤2.17，放进 bin/ 后经 rpath=$ORIGIN 命中。
 log "捆绑 conda 运行时：libstdc++.so.6 / libgcc_s.so.1 / libgomp.so.1"
 for lib in libstdc++.so.6 libgcc_s.so.1 libgomp.so.1; do
-  [[ -n "$(find "$CONDA_PREFIX/lib" -maxdepth 1 -name "${lib}*" | head -1)" ]] \
+  [[ -n "$(find "$CONDA_DIR/lib" -maxdepth 1 -name "${lib}*" | head -1)" ]] \
       || die "conda 运行时缺失：$lib"
-  cp -Pf "$CONDA_PREFIX/lib/${lib}"* "$STAGE/bin/"
+  cp -Pf "$CONDA_DIR/lib/${lib}"* "$STAGE/bin/"
 done
 # 补齐 soname 符号链接：conda 的 libgomp 只有 libgomp.so.1.0.0、没有 libgomp.so.1，
 # 缺了它 loader 会回退到系统 /lib（fnOS 未必装 libgomp1）→ 按 SONAME 建软链兜底。

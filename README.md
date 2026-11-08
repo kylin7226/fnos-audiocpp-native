@@ -98,7 +98,7 @@ CI 流程：checkout 本仓库 → checkout 上游 `0xShug0/audio.cpp`（锁定 
 > 装进 conda sysroot（bookworm 的 1.3.239 太旧，缺 `vk::LayerSettingEXT`/`spv::`），并把 conda 的
 > `libstdc++.so.6`/`libgcc_s.so.1`/`libgomp.so.1` 打进 `bin/`、用 patchelf 把 RPATH 规整为纯
 > `$ORIGIN`（产物要 `GLIBCXX_3.4.32`，高于 fnOS 系统的 `3.4.30`，必须随包携带）。
-> CI 走官方 conda-forge 通道；本地 CN 可设 `CONDA_CHANNEL`/`MINICONDA_URL` 切清华镜像加速。
+> CI 走官方 conda-forge 通道；本地 CN 可设 `AUDIOCPP_CONDA_CHANNEL`/`AUDIOCPP_MINICONDA_URL` 切清华镜像加速。
 
 > 首次编译约 20–60 分钟（audio.cpp 体量大，Vulkan + CPU 多 ISA 变体，外加一次 conda 工具链下载）。属正常。
 
