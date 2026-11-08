@@ -10,6 +10,6 @@ desktop_uidir   = ui
 desktop_applaunchname = audiocpp.Application
 service_port    = 58009
 checkport       = true
-desc            = audio.cpp 本地语音引擎（纯 API 模式，不启动 WebUI）。原生二进制 + Vulkan，为 Home Assistant / Assist 提供本地中文 TTS(CosyVoice3) 与 STT(SenseVoice)。安装后请把 GGUF 模型与参考音频放到应用的 audiocpp 共享目录。
+desc            = audio.cpp 本地语音引擎（纯 API 模式，不启动 WebUI）。原生二进制 + Vulkan，为 Home Assistant / Assist 提供本地中文 TTS(CosyVoice3) 与 STT(SenseVoice)。安装后按初始配置自动下载 GGUF 模型（约 2.5GB）到应用 audiocpp 共享目录。
 source          = thirdparty
 checksum        =
