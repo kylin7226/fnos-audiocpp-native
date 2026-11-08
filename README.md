@@ -239,14 +239,14 @@ bash scripts/pack-fpk.sh app dist/app.tgz 0.9.4 x86 dist
   [`.github/workflows/moo-json.yml`](.github/workflows/moo-json.yml) 自动下载 `.fpk`、
   校验 sha256、把 `download_url / sha256 / size` 写进 `releases.<版本>` 并提交回 `main`。
   维护脚本已 vendor 到 [`tools/update_moo_json.py`](tools/update_moo_json.py)，离线自包含。
-- **发布前需替换**：`moo.json` 里 `YOUR-ORG` 占位（`source_info.homepage` /
-  `bug_report_url` / `icon_url` / `readme_url`）改成你的真实 GitHub 用户名/组织。下载直链由
-  CI 按 `git remote origin` 自动推导，无需手填。
+- **仓库地址已填**：`moo.json` 里 `source_info.homepage` / `bug_report_url` / `icon_url` /
+  `readme_url` 均指向 `kylin7226/fnos-audiocpp-native`。下载直链由 CI 按 `git remote origin`
+  自动推导，无需手填。若日后迁移仓库，改这 4 处即可。
 
 本地预览一次写入（不改文件，只看 diff）：
 
 ```bash
-python3 tools/update_moo_json.py --file moo.json --repo YOUR-ORG/fnos-audiocpp-native \
+python3 tools/update_moo_json.py --file moo.json --repo kylin7226/fnos-audiocpp-native \
   --tag v0.9.4 --fpk dist/audiocpp_0.9.4_x86.fpk --keep 2 --dry-run
 ```
 

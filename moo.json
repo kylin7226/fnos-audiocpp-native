@@ -2,7 +2,7 @@
   "schema_version": "moo",
   "source_info": {
     "name": "audio.cpp · fnOS native 应用源",
-    "homepage": "https://github.com/YOUR-ORG/fnos-audiocpp-native",
+    "homepage": "https://github.com/kylin7226/fnos-audiocpp-native",
     "distributor": "audiocpp-fnos-native",
     "generated_by": "手工维护骨架 + .github/workflows/moo-json.yml（发 Release 后自动写入版本节点）",
     "description": "audio.cpp 本地语音引擎（纯 API + Vulkan）的飞牛 fnOS 原生 .fpk 应用源。releases 节点由 CI 在首次发布 Release 后自动填充。",
@@ -19,7 +19,7 @@
       "author": "0xShug0",
       "distributor": "audiocpp-fnos-native",
       "homepage": "https://github.com/0xShug0/audio.cpp",
-      "bug_report_url": "https://github.com/YOUR-ORG/fnos-audiocpp-native/issues",
+      "bug_report_url": "https://github.com/kylin7226/fnos-audiocpp-native/issues",
       "license": "MIT",
       "categories": [
         "AI",
@@ -27,8 +27,8 @@
       ],
       "install_type": "package",
       "service_port": "58009",
-      "icon_url": "https://raw.githubusercontent.com/YOUR-ORG/fnos-audiocpp-native/main/app/ICON_256.PNG",
-      "readme_url": "https://raw.githubusercontent.com/YOUR-ORG/fnos-audiocpp-native/main/README.md",
+      "icon_url": "https://raw.githubusercontent.com/kylin7226/fnos-audiocpp-native/main/app/ICON_256.PNG",
+      "readme_url": "https://raw.githubusercontent.com/kylin7226/fnos-audiocpp-native/main/README.md",
       "download_count": 0,
       "version": "0.9.4",
       "changelog": "",
