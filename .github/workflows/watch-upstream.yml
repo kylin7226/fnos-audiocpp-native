@@ -40,8 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       has_new: ${{ steps.detect.outputs.has_new }}
-      version: ${{ steps.detect.outputs.version }}
       base: ${{ steps.detect.outputs.base }}
+      rev: ${{ steps.detect.outputs.rev }}
     steps:
       - name: Checkout packager repo
         uses: actions/checkout@v4
@@ -74,6 +74,19 @@ jobs:
             echo "上游最新 release：${tag} → 基础版本 ${base}"
           fi
 
+          # 硬校验：base 必须非空且以数字开头。此前一次 schedule 运行里 base 变空，
+          # 把 "-000" 传给下游导致 checkout ref='v' 失败；这里让 check 作业带可读 ::error
+          # 直接失败，而不是把坏值传给 build（::error 注解可经公开 API 读取，便于定位）。
+          [[ -n "${base}" && "${base}" == [0-9]* ]] \
+            || { echo "::error::无效的上游版本 base='${base}'（tag='${tag:-}' IN_BASE='${IN_BASE:-}'）" >&2; exit 1; }
+
+          # 构建前确认上游 git tag 真实存在（有 release 但 tag 未必已推送到 git）
+          if ! curl -fsS -o /dev/null --max-time 30 \
+                 -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+                 "https://api.github.com/repos/${UPSTREAM}/git/ref/tags/v${base}"; then
+            echo "::error::上游 tag v${base} 不存在，放弃构建" >&2; exit 1
+          fi
+
           force="${IN_FORCE:-false}"
           existing="$(git tag -l "v${base}-[0-9][0-9][0-9]" | sort -V | tail -1 || true)"
 
@@ -82,7 +95,7 @@ jobs:
             {
               echo "has_new=false"
               echo "base=${base}"
-              echo "version="
+              echo "rev="
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -93,12 +106,11 @@ jobs:
           else
             rev="000"
           fi
-          version="${base}-${rev}"
-          echo "发现需构建的新版本：${version}"
+          echo "发现需构建的新版本：base=${base} rev=${rev}"
           {
             echo "has_new=true"
             echo "base=${base}"
-            echo "version=${version}"
+            echo "rev=${rev}"
           } >> "$GITHUB_OUTPUT"
 
   # 仅在检测到新版本时，链式调用正式发布链
@@ -107,4 +119,5 @@ jobs:
     if: needs.check.outputs.has_new == 'true'
     uses: ./.github/workflows/build-fpk.yml
     with:
-      version: ${{ needs.check.outputs.version }}
+      base: ${{ needs.check.outputs.base }}
+      revision: ${{ needs.check.outputs.rev }}
