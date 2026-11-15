@@ -36,7 +36,10 @@ concurrency:
 
 jobs:
   update:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call' || github.event.release.prerelease == false }}
+    # 经 workflow_call 被调用时，github.event_name 继承自最初触发事件（push/schedule/
+    # workflow_dispatch），永远不会是 'workflow_call'；只要不是 release 事件就照常执行，
+    # 是 release 事件时才排除 prerelease。
+    if: ${{ github.event_name != 'release' || github.event.release.prerelease == false }}
     runs-on: ubuntu-latest
     env:
       FPK_GLOB: "*.fpk"
