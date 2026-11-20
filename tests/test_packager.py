@@ -466,6 +466,51 @@ class Moo(unittest.TestCase):
             self.assertEqual(index.read_bytes(), original)
 
 
+class BuildMetadata(unittest.TestCase):
+    def test_foreign_owned_checkouts_use_command_scoped_trust(self):
+        script = (ROOT / "scripts/build-audiocpp.sh").read_text()
+        code = script.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        expected = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+        with tempfile.TemporaryDirectory(prefix="metadata test '") as tmp:
+            folder = Path(tmp)
+            src, conda, stage, repo = [folder / name for name in ("upstream", "conda", "stage", "packager")]
+            for checkout in (src, repo):
+                subprocess.run(["git", "clone", "--shared", "--no-checkout", str(ROOT), str(checkout)],
+                               check=True, capture_output=True)
+            (src / "LICENSE").write_text("fixture license")
+            (conda / "conda-meta").mkdir(parents=True)
+            (stage / "licenses").mkdir(parents=True)
+            env = {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1", "GIT_CONFIG_COUNT": "1",
+                   "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": "",
+                   "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+                   "CXX": "fixture-cxx", "AUDIOCPP_VERSION": "0.9.5-002"}
+            check_output = subprocess.check_output
+            def output(command, **kwargs):
+                if command[0] == "git":
+                    return check_output(command, **kwargs)
+                return {"fixture-cxx": "gcc 13.4.0\n", str(conda / "bin/conda"): "@EXPLICIT\n",
+                        "dpkg-query": "git\tfixture\n"}[command[0]]
+            with patch.dict(os.environ, env):
+                for checkout in (src, repo):
+                    result = subprocess.run(["git", "-C", str(checkout), "rev-parse", "HEAD"],
+                                            text=True, capture_output=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("dubious ownership", result.stderr)
+                with patch.object(sys, "argv", ["-", str(src), str(conda), str(stage), str(repo)]), \
+                        patch.object(subprocess, "check_output", side_effect=output):
+                    exec(compile(code, "build-metadata", "exec"), {})
+                for checkout in (src, repo):
+                    result = subprocess.run(["git", "-C", str(checkout), "rev-parse", "HEAD"],
+                                            text=True, capture_output=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("dubious ownership", result.stderr)
+            info = json.loads((stage / "build-info.json").read_text())
+            self.assertEqual(info["upstream_sha"], expected)
+            self.assertEqual(info["packager_sha"], expected)
+            self.assertEqual(info["version"], "0.9.5-002")
+            self.assertEqual((stage / "licenses/audio.cpp/LICENSE").read_text(), "fixture license")
+
+
 class Syntax(unittest.TestCase):
     def test_shell_and_json(self):
         for folder in ("app/cmd", "scripts", "payload/bin"):

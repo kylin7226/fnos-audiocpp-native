@@ -106,8 +106,9 @@ for path in (conda / 'pkgs').glob('*/info/licenses'):
 shutil.copytree(conda / 'conda-meta', stage / 'licenses/conda-meta')
 info = {
     'version': os.environ.get('AUDIOCPP_VERSION', 'dev'),
-    'upstream_sha': subprocess.check_output(['git', '-C', str(src), 'rev-parse', 'HEAD'], text=True).strip(),
-    'packager_sha': subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip(),
+    # Docker runs as root while these two bind mounts belong to the checkout user.
+    'upstream_sha': subprocess.check_output(['git', '-c', f'safe.directory={src.resolve()}', '-C', str(src), 'rev-parse', 'HEAD'], text=True).strip(),
+    'packager_sha': subprocess.check_output(['git', '-c', f'safe.directory={repo.resolve()}', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip(),
     'compiler': subprocess.check_output([os.environ['CXX'], '--version'], text=True).splitlines()[0],
     'conda_explicit': subprocess.check_output([str(conda / 'bin/conda'), 'list', '--explicit'], text=True).splitlines(),
     'debian_packages': subprocess.check_output(['dpkg-query', '-W'], text=True).splitlines(),
