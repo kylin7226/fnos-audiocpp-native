@@ -1,5 +1,6 @@
 {
   "ui": false,
+  "host": "0.0.0.0",
   "models_root": "__DATA_ROOT__/models",
   "voice_dir": "__DATA_ROOT__/voices",
   "lazy_load": true,
@@ -31,7 +32,7 @@
       "default_request_options": {
         "language": "zh",
         "enable_itn": true,
-        "keep_tags": true,
+        "keep_tags": false,
         "audio_chunk_mode": "none"
       }
     }

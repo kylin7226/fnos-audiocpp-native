@@ -1,5 +1,62 @@
 #!/bin/bash
+set -euo pipefail
+ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+python3 - "${TRIM_APPDEST:-${ROOT}/target}" <<'PY'
+import os, pathlib, select, signal, sys, time
+bindir = pathlib.Path(sys.argv[1]).resolve() / 'bin'
+scripts = {bindir / name for name in ('service.py', 'provision-models.py', 'provision-models.sh')}
+handles = {}
 
-### This script is called before the user upgrades the application.
+def capture(pid, parent=None):
+    proc = pathlib.Path(f'/proc/{pid}')
+    fd = None
+    matched = False
+    try:
+        fd = os.pidfd_open(pid)
+        if parent is None:
+            exe = (proc / 'exe').resolve(strict=True)
+            args = (proc / 'cmdline').read_bytes().split(b'\0')
+            script = pathlib.Path(os.fsdecode(args[1])).resolve() if len(args) > 1 and args[1] else None
+            matched = exe == bindir / 'audiocpp_server' or script in scripts
+        else:
+            stat = (proc / 'stat').read_text()
+            ppid = int(stat[stat.rfind(')') + 2:].split()[1])
+            matched = ppid == parent and not select.select([handles[parent]], [], [], 0)[0]
+        if matched:
+            handles[pid] = fd
+            fd = None
+            children = (proc / 'task' / str(pid) / 'children').read_text().split()
+            for child in children:
+                if int(child) not in handles:
+                    capture(int(child), pid)
+    except (ProcessLookupError, FileNotFoundError):
+        pass
+    except PermissionError:
+        if matched:
+            raise
+    finally:
+        if fd is not None:
+            os.close(fd)
 
-exit 0
+try:
+    for proc in pathlib.Path('/proc').glob('[0-9]*'):
+        if int(proc.name) not in handles:
+            capture(int(proc.name))
+    for fd in handles.values():
+        try:
+            signal.pidfd_send_signal(fd, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 20
+    for fd in handles.values():
+        if not select.select([fd], [], [], max(0, deadline - time.monotonic()))[0]:
+            try:
+                signal.pidfd_send_signal(fd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if not select.select([fd], [], [], 5)[0]:
+            raise RuntimeError('应用进程未退出，停止升级/卸载')
+finally:
+    for fd in handles.values():
+        os.close(fd)
+PY

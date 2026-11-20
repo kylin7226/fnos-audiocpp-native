@@ -1,60 +1,38 @@
 name: build-fnos-fpk
 
-# 在 Debian 12（glibc 2.36，与 fnOS 一致）里编译 audio.cpp Vulkan 版，
-# 再打包成可在飞牛 fnOS 应用中心直接安装的 .fpk（原生二进制，不用容器）。
-#
-# ── 版本号方案：<上游 audio.cpp 版本>-<本打包项目修订号(三位)>，例如 0.9.4-001 ──
-#   · 上游版本锁正式发布 tag（如 v0.9.4），保证源码可复现、可追溯；
-#   · 修订号区分「同一上游版本、本仓库多次打包」——改了构建脚本/配置/资产后重打包，
-#     就递增 -001、-002…。这也是 Synology/fnOS 系包管理惯用的 version-revision 形式，
-#     fnOS 会据此判定升级。manifest 版本、fpk 文件名、Release、moo.json 全用它。
-#
-# ── 两种触发策略 ──
-#   A) 推送 tag v*（正式发布，推荐用带修订号的 tag，如 v0.9.4-001）
-#      → 正式构建：产出 .fpk，上传 artifact，并创建 Release 附带 .fpk。
-#        tag 名即版本；上游源码 ref 取 tag 的 base 部分（v0.9.4-001 → 上游 v0.9.4）。
-#        兼容不带修订号的老 tag（v0.9.4 → 视为 0.9.4-000）。
-#   B) 手动触发（Actions → build-fnos-fpk → Run workflow，在 main 分支上）
-#      → 预览构建：只产出 artifact，不建 Release、不进 moo 索引，用于验证改动能否编过。
-#        修订号可留空自动按现有 v<base>-NNN tag 数递增，或手填三位数。
-#
-# 发布正式版的完整流程：本地 `git tag v0.9.4-001 && git push origin v0.9.4-001`
-# → 策略 A 构建并创建 Release → Release published 触发 moo-json.yml 写回市场索引。
-
 on:
   workflow_dispatch:
     inputs:
       audiocpp_ref:
-        description: '上游 audio.cpp 版本（正式发布 tag，如 v0.9.4）'
-        required: false
+        description: '上游标准正式发布 tag，例如 v0.9.4'
         default: 'v0.9.4'
       revision:
-        description: '打包修订号（三位，如 001）；留空则按现有同名 tag 数自动递增'
-        required: false
+        description: '三位修订号；留空使用已有最大修订号加一'
         default: ''
   push:
     tags:
       - 'v*'
-  # 供 watch-upstream.yml 链式调用：监听到上游新 release 时，直接以指定完整版本
-  # （如 0.9.5-000）跑正式发布链。之所以用 workflow_call 而非“推 tag 触发 push”，是
-  # 因为 GITHUB_TOKEN 推送的 tag 不会触发新的 workflow run；而 workflow_call 在同一
-  # run 内内联执行，不受该限制。版本 tag 由下面的 softprops 在建 Release 时自动创建。
   workflow_call:
     inputs:
       base:
-        description: '上游基础版本（不含 v 前缀），如 0.9.5'
         type: string
         required: true
       revision:
-        description: '三位打包修订号，如 000'
         type: string
         required: true
 
 permissions:
   contents: write
 
+concurrency:
+  group: audiocpp-publication
+  cancel-in-progress: false
+
 jobs:
+  validate:
+    uses: ./.github/workflows/check.yml
   build:
+    needs: validate
     runs-on: ubuntu-latest
     outputs:
       kind: ${{ steps.vars.outputs.kind }}
@@ -63,132 +41,72 @@ jobs:
       - name: Checkout packager repo
         uses: actions/checkout@v4
         with:
-          # 需要完整 tag 列表来自动推算修订号（策略 B 留空时）
           fetch-depth: 0
-
-      - name: Resolve version & source ref
+          persist-credentials: false
+      - name: Resolve version and source ref
         id: vars
         env:
           IN_REF: ${{ inputs.audiocpp_ref }}
           IN_REV: ${{ inputs.revision }}
           CALL_BASE: ${{ inputs.base }}
+        run: python3 tools/release.py resolve
+      - name: Check existing release without replacing assets
+        id: existing
+        if: steps.vars.outputs.kind == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.vars.outputs.tag_name }}
+        run: python3 tools/release.py inspect
+      - name: Verify upstream formal release
+        if: steps.existing.outputs.build != 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ steps.vars.outputs.ref }}
         run: |
-          set -euo pipefail
-          if [[ -n "${CALL_BASE}" ]]; then
-            # 策略 C：被 watch-upstream.yml 通过 workflow_call 调用。base/revision 分别给定，
-            # 不反解字符串（上游有 v0.9.2-drama3-base-small 这类多段 tag，反解会错）。
-            # 注意：可复用 workflow 里的 github.event_name 继承自调用方的触发事件
-            # （schedule / workflow_dispatch），永远不会是 'workflow_call'，不能用它判断；
-            # 改用 call 专属输入 base 是否非空来识别（push/dispatch 均未定义 base → 为空）。
-            base="${CALL_BASE}"
-            rev="${IN_REV}"
-            kind="release"
-          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            # 策略 A：tag 名即版本。tag 形如 0.9.4-001 或老式 0.9.4。
-            tag="${GITHUB_REF#refs/tags/v}"
-            base="${tag%%-*}"                       # 上游版本，如 0.9.4
-            if [[ "$tag" == *-* ]]; then rev="${tag##*-}"; else rev="000"; fi
-            kind="release"
-          else
-            # 策略 B：main 手动预览。base 取输入的上游版本（去掉可能的 v 前缀）。
-            base="${IN_REF#v}"
-            rev="${IN_REV}"
-            if [[ -z "$rev" ]]; then
-              n=$(git tag -l "v${base}-[0-9][0-9][0-9]" | wc -l | tr -d ' ')
-              rev=$(printf "%03d" "$n")
-            fi
-            kind="preview"
-          fi
-          # 兜底守卫：任何分支算出的 base 都必须合法，否则带可读 ::error 失败，绝不让空 base
-          # 走到 checkout（那会报难懂的 "A branch or tag with the name 'v' could not be found"）。
-          [[ -n "$base" && "$base" == [0-9]* ]] \
-            || { echo "::error::base 非法：'$base'（event=${GITHUB_EVENT_NAME} CALL_BASE='${CALL_BASE}' IN_REF='${IN_REF}'）" >&2; exit 1; }
-          [[ "$rev" =~ ^[0-9]{3}$ ]] || { echo "::error::修订号必须是三位数字，得到：'$rev'" >&2; exit 1; }
-          version="${base}-${rev}"
-          ref="v${base}"
-          # tag_name 统一为 v<version>：策略 A 下恰好等于 github.ref_name；策略 C 下由
-          # softprops 据此在远端自动创建版本 tag（指向本次 run 的仓库 HEAD）。
-          tag_name="v${version}"
-          {
-            echo "ref=${ref}"
-            echo "version=${version}"
-            echo "kind=${kind}"
-            echo "tag_name=${tag_name}"
-          } >> "$GITHUB_OUTPUT"
-          echo "上游 ref=${ref} · 打包版本=${version} · 类型=${kind} · tag=${tag_name}"
-
-      # 上游 audio.cpp 是公开仓库，普通 checkout 即可；不拉子模块
-      # （唯一子模块是 WebUI 前端，纯 API 构建用不到，官方 release 也不拉）。
+          gh api "repos/0xShug0/audio.cpp/releases/tags/$REF" > "$RUNNER_TEMP/upstream-release.json"
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert not d["draft"] and not d["prerelease"], "upstream is not a formal release"' "$RUNNER_TEMP/upstream-release.json"
       - name: Checkout audio.cpp source
+        if: steps.existing.outputs.build != 'false'
         uses: actions/checkout@v4
         with:
           repository: 0xShug0/audio.cpp
           ref: ${{ steps.vars.outputs.ref }}
           path: audio.cpp-src
           fetch-depth: 1
-
-      # 关键：在 debian:12 容器里编译。容器 glibc 2.36 与 fnOS 一致，但 audio.cpp
-      # 要求 GCC≥13（bookworm 只有 gcc-12，earshot_vad 的 avx2 pragma 会编译失败），
-      # 故 build-audiocpp.sh 在容器内装 conda-forge gcc-13——它自带 glibc 2.34 的
-      # sysroot，产物只要求 GLIBC≤2.34（<fnOS 2.36），并把 conda 的 libstdc++/libgcc_s/
-      # libgomp 打进 bin/（rpath=$ORIGIN）以满足 GLIBCXX_3.4.32。CI 走官方 conda-forge
-      # 通道（runner 在海外，快）；本地 CN 可用 AUDIOCPP_CONDA_CHANNEL/AUDIOCPP_MINICONDA_URL 切清华镜像。
-      # 采用官方 linux-vulkan-**portable** 配方（NATIVE_CPU=OFF + CPU_ALL_VARIANTS=ON），
-      # 避免按 runner CPU 做 -march=native 导致在用户 NAS 上 SIGILL。
-      - name: Build audiocpp (Vulkan) in debian:12
+          persist-credentials: false
+      - name: Build and smoke-test in Debian 12
+        if: steps.existing.outputs.build != 'false'
+        env:
+          VERSION: ${{ steps.vars.outputs.version }}
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE":/work \
-            -e SRC_DIR=/work/audio.cpp-src \
-            -e REPO_DIR=/work \
-            -e OUT_TGZ=/work/dist/app.tgz \
-            -e AUDIOCPP_VERSION="${{ steps.vars.outputs.version }}" \
-            -e JOBS="$(nproc)" \
-            debian:12 \
-            bash /work/scripts/build-audiocpp.sh
-
-      # 用官方 fnpack 产包（手搓 tar 会被 fnOS 以“应用包格式不符合系统版本要求”拒装）。
-      # pack-fpk.sh 只负责组装 fnpack 工程目录并调用它；checksum/包内布局全由 fnpack 处理。
-      - name: Fetch fnpack
-        run: |
-          set -euo pipefail
-          FNPACK_URL="${FNPACK_URL:-https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64}"
-          curl -fsSL --retry 3 -o /usr/local/bin/fnpack "$FNPACK_URL"
-          chmod +x /usr/local/bin/fnpack
-          fnpack --help | head -2
+            -e SRC_DIR=/work/audio.cpp-src -e REPO_DIR=/work \
+            -e OUT_TGZ=/work/dist/app.tgz -e AUDIOCPP_VERSION="$VERSION" \
+            -e JOBS="$(nproc)" debian:12 bash /work/scripts/build-audiocpp.sh
+      - name: Pack and verify FPK
+        if: steps.existing.outputs.build != 'false'
         env:
-          FNPACK_URL: https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64
-
-      - name: Pack .fpk
+          VERSION: ${{ steps.vars.outputs.version }}
         run: |
-          # 上一步 docker 以 root 身份创建 dist/ 和 app.tgz，而本步以非 root 的 runner
-          # 用户运行——不改属主则 pack-fpk.sh 无法把 .fpk 写进 dist/（tar 报 Permission
-          # denied，退出码 2）。GitHub 托管 runner 有免密 sudo，这里把 dist/ 交还 runner。
           sudo chown -R "$(id -u):$(id -g)" dist
-          chmod +x scripts/*.sh
-          bash scripts/pack-fpk.sh app dist/app.tgz "${{ steps.vars.outputs.version }}" x86 dist
-
-      - name: Upload fpk artifact
+          bash scripts/pack-fpk.sh app dist/app.tgz "$VERSION" x86 dist
+          python3 tools/check_payload.py --fpk "dist/audiocpp_${VERSION}_x86.fpk" --version "$VERSION"
+      - name: Upload validated artifact
+        if: steps.existing.outputs.build != 'false'
         uses: actions/upload-artifact@v4
         with:
           name: audiocpp-fnos-fpk-${{ steps.vars.outputs.version }}
           path: dist/*.fpk
           if-no-files-found: error
-
-      # 正式发布（策略 A 推 tag / 策略 C 链式调用）建 Release；策略 B 手动预览到此为止。
-      # tag_name=v<version>：策略 A 已存在同名 tag，策略 C 下 softprops 会自动创建它。
-      - name: Attach to Release
+      - name: Publish immutable release
         if: steps.vars.outputs.kind == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.vars.outputs.tag_name }}
-          name: audio.cpp fnOS fpk ${{ steps.vars.outputs.version }}
-          files: dist/*.fpk
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.vars.outputs.tag_name }}
+        run: python3 tools/release.py publish
 
-  # 上面的 Release 由 softprops 用 GITHUB_TOKEN 创建，而 GitHub 不会为 GITHUB_TOKEN 触发的
-  # 事件再启动新 workflow，故 moo-json.yml 的 `on: release` 对自动发布永不触发。这里在同一
-  # run 内用 workflow_call 直接调用它写回市场索引——链式调用不受该限制。仅正式 Release 触发。
+  # GITHUB_TOKEN-created releases do not trigger another release workflow.
   update-moo:
     needs: build
     if: needs.build.outputs.kind == 'release'

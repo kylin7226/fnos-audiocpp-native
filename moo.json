@@ -4,7 +4,7 @@
     "name": "audio.cpp · fnOS native 应用源",
     "homepage": "https://github.com/kylin7226/fnos-audiocpp-native",
     "distributor": "audiocpp-fnos-native",
-    "generated_by": "手工维护骨架 + .github/workflows/moo-json.yml（发 Release 后自动写入版本节点）",
+    "generated_by": "手工维护骨架 + .github/workflows/moo-json.yml（workflow_call 同步已验证 Release）",
     "description": "audio.cpp 本地语音引擎（纯 API + Vulkan）的飞牛 fnOS 原生 .fpk 应用源。releases 节点由 CI 在首次发布 Release 后自动填充。",
     "updated_at": "2026-11-07T00:00:00+08:00"
   },
@@ -15,7 +15,7 @@
       "platform": [
         "x86"
       ],
-      "desc": "audio.cpp 本地语音引擎（纯 API 模式，不启动 WebUI）。原生二进制 + Vulkan，为 Home Assistant / Assist 提供本地中文 TTS(CosyVoice3) 与 STT(SenseVoice)。安装后请把 GGUF 模型与参考音频放到应用的 audiocpp 共享目录。",
+      "desc": "audio.cpp 本地语音引擎（纯 API 模式，不启动 WebUI）。原生二进制 + Vulkan，为 Home Assistant / Assist 提供本地中文 TTS(CosyVoice3) 与 STT(SenseVoice)。安装后自动从 ModelScope 下载并校验默认 GGUF，预置参考音频；配置与日志位于 audiocpp 共享目录。",
       "author": "0xShug0",
       "distributor": "audiocpp-fnos-native",
       "homepage": "https://github.com/0xShug0/audio.cpp",

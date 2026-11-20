@@ -1,143 +1,59 @@
 name: Update moo.json
 
-# 发 Release 后，自动把 .fpk 的下载直链 / sha256 / 大小写进仓库根的 moo.json，
-# 让本仓库成为一个可被 Moo 应用商店（https://github.com/Blue-Mink/moo）收录的应用源。
-#
-# 版本号以包内 manifest 为准；只处理正式发布（prerelease 不进索引）。
-# 维护脚本已 vendor 到 tools/update_moo_json.py（离线自包含），取不到时再回退上游。
-
-# 注意：Release 由 build-fpk.yml 用 GITHUB_TOKEN（softprops）创建，而 GitHub 不会为
-# GITHUB_TOKEN 触发的事件再启动新 workflow（仅 workflow_dispatch/repository_dispatch 例外），
-# 所以下面的 `on: release` 对自动发布的 Release 实际不会触发。真正的自动链路由 build-fpk.yml
-# 通过 workflow_call 直接调用本 workflow 完成（同一 run 内调用，不受该限制）。
-# `on: release` 与 workflow_dispatch 保留，用于手动补跑历史 Release。
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "要同步的 release tag（留空=用触发本次运行的 tag）"
-        required: false
+        description: '要同步的正式 release tag，例如 v0.9.4-002'
+        required: true
   workflow_call:
     inputs:
       tag:
-        description: "要同步的 release tag（由 build-fpk.yml 传入）"
         type: string
         required: true
 
 permissions:
   contents: write
 
-# 串行化：两个 release 几乎同时发布时，避免后一个基于旧索引提交、把前一个版本节点冲掉
 concurrency:
-  group: moo-json-${{ github.ref }}
+  group: moo-json-main
   cancel-in-progress: false
 
 jobs:
   update:
-    # 经 workflow_call 被调用时，github.event_name 继承自最初触发事件（push/schedule/
-    # workflow_dispatch），永远不会是 'workflow_call'；只要不是 release 事件就照常执行，
-    # 是 release 事件时才排除 prerelease。
-    if: ${{ github.event_name != 'release' || github.event.release.prerelease == false }}
+    if: github.event_name != 'release' || github.event.release.prerelease == false
     runs-on: ubuntu-latest
     env:
-      FPK_GLOB: "*.fpk"
-      KEEP: "2"
-      MOO_JSON: "moo.json"
-      BRANCH: "main"
-      SCRIPT_REF: "main"
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      FPK_DIR: ${{ github.workspace }}/release-assets
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.BRANCH }}
-
-      - name: Resolve tag
-        id: t
+          ref: main
+      - name: Validate tag and download verified FPK
+        run: python3 tools/release.py download
+      - name: Check package structure and version
+        run: python3 tools/check_payload.py --fpk "$FPK_DIR/audiocpp_${TAG#v}_x86.fpk" --version "${TAG#v}"
+      - name: Update moo.json with vendored updater
         run: |
-          TAG="${{ github.event.release.tag_name || inputs.tag }}"
-          [ -n "$TAG" ] || { echo "::error::拿不到 tag"; exit 1; }
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "将同步 release：$TAG（版本号以包内 manifest 为准）"
-
-      - name: Download FPK from release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p /tmp/fpk
-          gh release download "${{ steps.t.outputs.tag }}" --pattern "$FPK_GLOB" --dir /tmp/fpk
-          ls -l /tmp/fpk
-          [ -n "$(ls -A /tmp/fpk)" ] || { echo "::error::release 里没有匹配 $FPK_GLOB 的资产"; exit 1; }
-
-      - name: Verify FPK against release digest
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.t.outputs.tag }}
-        run: |
-          # 与 GitHub 记录的 asset.digest 对账：防下载被中间镜像替换 / 截断。
-          # 老 release 可能没有 digest 字段，此时只告警不失败。
-          if ! gh api "repos/${{ github.repository }}/releases/tags/$TAG" \
-                 --jq '.assets[] | "\(.name) \(.digest)"' > /tmp/digests.txt; then
-            echo "::warning::取不到 release 元数据，跳过 digest 对账"
-            exit 0
-          fi
-          fail=0
-          for f in /tmp/fpk/*.fpk; do
-            [ -f "$f" ] || continue
-            n=$(basename "$f")
-            want=$(awk -v n="$n" '$1 == n {print $2}' /tmp/digests.txt | sed 's/^sha256://')
-            if [ -z "$want" ]; then
-              echo "::warning::$n 在 release 里没有 sha256 digest（老 release），跳过"
-              continue
-            fi
-            got=$(sha256sum "$f" | awk '{print $1}')
-            if [ "$want" != "$got" ]; then
-              echo "::error::$n 下载字节与 GitHub 记录的 sha256 不一致｜期望 $want｜实际 $got"
-              fail=1
-            else
-              echo "$n digest OK（$got）"
-            fi
-          done
-          exit $fail
-
-      - name: Locate updater
-        run: |
-          # 优先用仓库内 vendor 副本；缺失时回退上游（raw → jsDelivr → gh-proxy）。
-          if [ -f tools/update_moo_json.py ]; then
-            cp tools/update_moo_json.py /tmp/update_moo_json.py && echo "使用仓库内 vendor 副本"
-          else
-            curl -fsSL --connect-timeout 10 --max-time 60 "https://raw.githubusercontent.com/Blue-Mink/moo/${SCRIPT_REF}/tools/update_moo_json.py" -o /tmp/update_moo_json.py \
-              || curl -fsSL --connect-timeout 10 --max-time 60 "https://cdn.jsdelivr.net/gh/Blue-Mink/moo@${SCRIPT_REF}/tools/update_moo_json.py" -o /tmp/update_moo_json.py \
-              || curl -fsSL --connect-timeout 10 --max-time 60 "https://gh-proxy.com/https://raw.githubusercontent.com/Blue-Mink/moo@${SCRIPT_REF}/tools/update_moo_json.py" -o /tmp/update_moo_json.py \
-              || { echo "::error::取不到 update_moo_json.py（vendor 与三个通道全失败）"; exit 1; }
-          fi
-          python3 /tmp/update_moo_json.py --help >/dev/null
-
-      - name: Update moo.json
-        env:
-          TAG: ${{ steps.t.outputs.tag }}
-        run: |
-          # 版本号以包内 manifest 为准：tag 与包内版本可能不同，
-          # 所以只传 --tag（决定下载直链的 release 段），不传 --version。
-          KEEP="${KEEP:-2}"
-          python3 /tmp/update_moo_json.py \
-            --file "$MOO_JSON" \
-            --tag "$TAG" \
-            --fpk /tmp/fpk/*.fpk \
-            --keep "$KEEP"
-
+          python3 tools/update_moo_json.py --file moo.json --tag "$TAG" \
+            --fpk "$FPK_DIR"/*.fpk --keep 2
       - name: Commit if changed
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
         run: |
-          if git diff --quiet -- "$MOO_JSON"; then
-            echo "moo.json 无变化，跳过提交"
+          if git diff --quiet -- moo.json; then
             exit 0
           fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$MOO_JSON"
-          git commit -m "chore(moo.json): 同步 ${{ steps.t.outputs.tag }} 版本节点"
-          git push origin "HEAD:${BRANCH}" || {
-            echo "::warning::push 失败，rebase 后重试一次（可能是他人刚推送）"
-            git pull --rebase --autostash origin "${BRANCH}" && git push origin "HEAD:${BRANCH}" \
-              || { echo "::error::仍无法推送：分支保护请放行该 bot，或改用提 PR 方式"; exit 1; }
+          git add moo.json
+          git commit -m "chore(moo.json): 同步 $TAG 版本节点"
+          git push origin HEAD:main || {
+            printf '%s\n' '::error::main 在同步期间发生变化或受保护；请重跑 Moo 更新，重新基于最新索引计算。'
+            exit 1
           }

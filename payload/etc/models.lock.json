@@ -1,0 +1,16 @@
+{
+  "cosyvoice3": {
+    "filename": "cosyvoice3-q8_0.gguf",
+    "size": 2257658336,
+    "sha256": "d13bd731ead92d6d514d5749d9b59ea1b3ae735569fa46978250caaf5c983133",
+    "modelscope": "audio-cpp/audio.cpp-gguf/resolve/master/CosyVoice3-GGUF/cosyvoice3-q8_0.gguf",
+    "hf": "audio-cpp/audio.cpp-gguf/resolve/b7b9aa1f16c819c3b2d69a602b51786bdfb361a3/CosyVoice3-GGUF/cosyvoice3-q8_0.gguf"
+  },
+  "sense_asr": {
+    "filename": "sensevoice-small-q8-audiocpp-v1.gguf",
+    "size": 254211200,
+    "sha256": "4dedf169f625437fb336f2959674f399819729a765e184128c0e25a6e16ff0ec",
+    "modelscope": "callxxa/SenseVoiceSmall-GGUF-audiocpp/resolve/master/sensevoice-small-q8-audiocpp-v1.gguf",
+    "hf": "FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp/resolve/5c3fcfe748a8714216bc135476d5863084fddb72/sensevoice-small-q8-audiocpp-v1.gguf"
+  }
+}

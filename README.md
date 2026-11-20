@@ -1,359 +1,216 @@
 # fnos-audiocpp-native
 
-用 **GitHub Actions** 在 **Debian 12**（与 fnOS 同 glibc）里编译 audio.cpp 的 **Vulkan**
-版本，并打包成可在飞牛 fnOS **应用中心直接安装的 `.fpk`**。
+在 **Debian 12 / glibc 2.36** 中编译 audio.cpp 的 **Vulkan portable** 版本，用官方 **fnpack 1.2.3** 打包为飞牛 fnOS 可安装的 `.fpk`。
 
-这是**原生（不用容器）**部署：fpk 里装的是编译好的 `audiocpp_server` 二进制，
-由 `cmd/main` 以应用专用用户直接拉起，**不经过 Docker / podman**。因此不存在
-"fpk 容器模板无法注入 `/dev/dri`" 的老问题——GPU 权限通过 `config/privilege` 的
-`join-groups: ["video","render"]` 授予，原生进程直接访问宿主核显/独显。
+NAS 运行原生进程，不需要 Docker/podman。纯 API 模式 `--no-ui`，默认端口 **58009**，为 Home Assistant 提供中文 TTS（CosyVoice3）和 STT（SenseVoice）。CUDA 不包含在此包中。
 
-> 纯 API 模式（`--no-ui`），不启动 WebUI；为 Home Assistant / Assist 提供本地中文
-> TTS(CosyVoice3) 与 STT(SenseVoice)，端口 **58009**。
+## 1. 构建与发布
 
----
+版本统一为 **`X.Y.Z-NNN`**：上游标准正式版本加三位打包修订号，例如 `0.9.4-003`。上游源码锁定 `vX.Y.Z` 正式 Release，而非 main。
 
-## 1. 为什么必须在 Debian 12 里编
+| 入口 | 行为 |
+| --- | --- |
+| 手动运行 `build-fnos-fpk` | 预览构建，仅产出 artifact，不发布、不更新 Moo；修订号留空取现有最大值加一 |
+| 推送 `vX.Y.Z-NNN` tag | 构建、验证、发布 Release，再通过 `workflow_call` 更新 Moo |
+| `watch-upstream-release` | 每天 UTC 03:20 检查上游标准正式 Release，全自动构建及发布 |
+| 手动运行 watcher | `base` 可指定标准版本；`force=true` 创建新修订号，不替换旧包 |
+| 手动运行 `Update moo.json` | 必须填写已有 Release tag，只恢复索引同步，不重建包 |
 
-| | glibc | 能否在 fnOS(Debian 12) 运行 |
-| --- | --- | --- |
-| 官方 release 的 Linux Vulkan 二进制 | Ubuntu 24.04 = **2.39** | ❌ `GLIBC_2.38/GLIBCXX_3.4.32 not found` |
-| 本方案（debian:12 容器内编译） | bookworm = **2.36** | ✅ |
+不接受不带修订号的本仓库 tag，也不接受 `v0.9.2-drama3-base-small` 等专项后缀版本；监听器会跳过专项版本及 prerelease，避免构建错源码和版本排序歧义。三位修订号达到 `999` 后停止并报错。
 
-glibc 只向后兼容。官方二进制在更新的 glibc 上链接，拿到 fnOS 直接跑会报符号缺失，
-且无法靠 `LD_LIBRARY_PATH` 补（glibc 是加载器本身）。所以 CI 用 `container: debian:12`
-编译，产物与 fnOS 同代 glibc。
+### 自动恢复与不可变发布
 
-## 1.1 为什么锁定"正式版 + portable 配方"
+“存在 tag”不再表示成功，监听器还会核对 Release 附件、大小、SHA256 和 Moo 节点：
 
-- **正式版**：CI 默认编译上游 `0xShug0/audio.cpp` 的**正式发布 tag**（当前 `v0.9.4`），
-  而非 `main` 分支——保证可复现、可追溯。升级时改 `build-fpk.yml` 的 `default`，或手动触发时填新 tag；
-  打 `v*` tag 时，tag 名即被视为要编译的上游 release tag（如本仓库打 `v0.9.4` → 编上游 `v0.9.4`）。
-- **portable 配方**：上游 `ENGINE_ENABLE_NATIVE_CPU` 默认 **ON**，会按"编译机 CPU"下
-  `-march=native`。本包在 GitHub runner 上编、却要跑在各不相同的 NAS CPU 上，native 编译
-  可能触发 **SIGILL（非法指令）**。因此对齐官方 `linux-vulkan-portable` job：
-  `-DENGINE_ENABLE_NATIVE_CPU=OFF -DENGINE_ENABLE_CPU_ALL_VARIANTS=ON`——CPU 后端编成按
-  ISA 运行时自选的动态库（`ggml-cpu-*.so`，随 `.so` 一并打进 `bin/`），可在任意 x86-64 NAS 运行。
+- 无附件且尚未索引：允许重建；若旧 tag 指向不同打包源码，递增修订号，绝不移动旧 tag。
+- 附件已完整上传、Moo 未完成：复用附件，只补发布草稿/同步索引。
+- Release 与索引均完成：不重复工作。
+- 上传中遗留的零字节 `starter` 占位附件：上传前清理后重试；非空附件不会被覆盖。
+- 已被 Moo 索引的附件丢失或哈希变化：明确失败，不偷偷重建同版本。恢复原始附件或使用新修订号。
+- 主分支同步冲突/分支保护：工作流失败并给出注解；下次监听或手动重跑会重新读取索引。
 
-## 2. 目录结构
+新 Release 先建草稿，tag 绑定本次打包 commit；上传后验证字节一致再公开。构建发布统一排队，所有 Moo 更新按 main 分支串行化。GitHub 的并发组只保留有限待运行任务，漏排时每日监听会再次核对状态。
 
-```
-fnos-audiocpp-native/
-├── .github/workflows/build-fpk.yml   # CI：debian:12 编译上游正式版 → 打包 fpk → artifact/Release
-├── .github/workflows/moo-json.yml    # 发 Release 后自动把版本节点写进 moo.json
-├── moo.json                          # Moo 应用商店（Blue-Mink/moo）应用源索引
-├── tools/update_moo_json.py          # moo.json 维护脚本（vendor 自上游，离线自包含）
-├── app/                              # fpk 骨架（元数据，不含二进制）
-│   ├── manifest                      # appname/version/service_port=58009/checksum(打包时填)
-│   ├── config/privilege              # run-as=package + join-groups video,render（GPU）
-│   ├── config/resource               # data-share(audiocpp) + port-config
-│   ├── cmd/main                      # 自包含 start/stop/status，PID 管理 audiocpp_server
-│   ├── cmd/install_init              # 预检 /dev/dri
-│   ├── cmd/install_callback          # 渲染 server.json、建目录、seed VAD/demo 音频
-│   ├── cmd/upgrade_callback          # 升级后重渲染配置（复用 install_callback）
-│   ├── cmd/uninstall_callback        # 卸载保留模型，只记日志
-│   ├── ui/config                     # 桌面入口（指向 /health）
-│   ├── wizard/install                # 安装提示（模型放哪、GPU 说明）
-│   ├── audiocpp.sc                   # 58009 端口转发声明
-│   ├── ICON.PNG / ICON_256.PNG       # 应用图标
-├── payload/etc/server.json.template  # 进 app.tgz；install 时把 __DATA_ROOT__ 换成共享路径
-├── payload/bin/provision-models.sh   # 进 app.tgz；按 server.json 自动下载缺失模型
-└── scripts/
-    ├── build-audiocpp.sh             # 在 debian:12 内编译（portable 配方）并组装 app.tgz
-    └── pack-fpk.sh                   # 骨架 + app.tgz → .fpk（自包含，不依赖 fnpack）
-```
+`GITHUB_TOKEN` 创建的 Release 不会再触发普通 `release` 工作流，所以自动链路使用 `workflow_call`，不依赖二次事件触发。可复用工作流的事件名继承调用方，版本选择通过显式输入识别。
 
-两层结构：**fpk 根**（manifest/cmd/config/wizard/图标/sc，均为裸名 tar 条目、不带 `./` 前缀）
-是元数据；**app.tgz** 是载荷，安装时解压到 `TRIM_APPDEST`(target/)，含
-`bin/audiocpp_server`、`bin/*.so`（rpath=`$ORIGIN` 需同目录）、`etc/` 模板、`assets/`、
-以及桌面入口 `ui/`（`desktop_uidir=ui` 指向 target/ui，故 ui 必须在 app.tgz 内、不能放 fpk 顶层）。
+### 构建检查
 
-## 3. CI 产出 fpk
+- Debian 12 环境强制检查；GCC/G++ 13.4.0、sysroot 2.34、对应 GCC 运行库固定版本。
+- 固定 Miniconda 安装器和 fnpack 版本及 SHA256；镜像下载必须提供相同文件字节。
+- Vulkan-Headers 固定 `v1.3.290`；`ENGINE_ENABLE_NATIVE_CPU=OFF`、`ENGINE_ENABLE_CPU_ALL_VARIANTS=ON`，避免按 CI CPU 编译。
+- 随包携带 C++/OpenMP 运行库，RPATH 统一为 `$ORIGIN`；扫描全部 ELF 的 GLIBC 要求和动态依赖。
+- VAD、四段参考音频、prompt_text、运行脚本及配置缺失时禁止发布。
+- 在 Debian 12 内用 CPU 后端启动 `/health` 和 `/v1/models` 冒烟检查；这不是 GPU 或真实推理测试，NAS 仍须完成下方 TTS→STT 验证。
+- 官方 fnpack 产包后检查外层结构、载荷、版本和平台。
+- `build-info.json` 记录上游/打包源码 SHA、编译器、conda 精确包清单及 Debian 包版本；载荷 `licenses/` 保留上游、内嵌依赖及 conda 缓存中的许可文件。
 
-把本目录推到一个 GitHub 仓库后：
+Debian apt 仓库和 conda 包构建号仍可能更新，构建清单用于追溯，并不承诺二进制逐字节可复现。重新构建已发布版本必须递增修订号。
 
-版本号方案：`<上游版本>-<打包修订号(三位)>`，如 `0.9.4-001`。上游版本锁正式 tag（可复现），
-修订号区分「同一上游版本、本仓库多次打包」（改脚本/配置后重打包递增 `-001`、`-002`…），
-是 Synology/fnOS 系惯用的 `version-revision` 形式，fnOS 据此判定升级。
+## 2. 安装、配置与目录
 
-两种触发策略：
+前提：x86-64 fnOS、可用 Vulkan 驱动与 `/dev/dri/renderD*`、系统 `python3`（3.9+，支持 pidfd）、`curl`。安装前会检查必要命令和 pidfd 支持。
 
-- **策略 B｜手动预览（main 分支）**：Actions → `build-fnos-fpk` → Run workflow，填 `audiocpp_ref`
-  （默认 `v0.9.4`）与 `revision`（三位；留空则按现有 `v<base>-NNN` tag 数自动递增）。
-  **只产 artifact、不建 Release、不进 moo 索引**，用于验证改动能否编过。产物在 Artifacts
-  （`audiocpp-fnos-fpk-<版本>`）。
-- **策略 A｜打 tag 正式发布**：`git tag v0.9.4-001 && git push origin v0.9.4-001`
-  → 构建上游 `v0.9.4` 并创建 Release 附 `.fpk`（版本 `0.9.4-001`）→ Release published
-  再触发 `Update moo.json` 写回市场索引。兼容不带修订号的老 tag（`v0.9.4` 视为 `0.9.4-000`）。
+1. 应用中心 → 手动安装 → 选择 `.fpk`。
+2. 安装脚本预置 VAD/参考音频，将配置放到文件管理 → 应用文件 → **audiocpp/server.json**。
+3. 以应用用户后台下载默认模型，查看共享 `logs/model-download.status`。
+4. 启动应用，执行第 4 节验证，然后连接 HA。
 
-CI 流程：checkout 本仓库 → checkout 上游 `0xShug0/audio.cpp`（锁定 release tag，不拉子模块，
-纯 API 用不到 WebUI 前端）→ `docker run debian:12` 跑 `build-audiocpp.sh` 产出 `app.tgz`
-→ `pack-fpk.sh` 产出 `.fpk`。
+目录概要（具体存储卷由 fnOS 决定）：
 
-> **为什么在 debian:12 里还要装 conda gcc-13**：audio.cpp 文档硬性要求 GCC≥13，且
-> `earshot_vad` 的 `#pragma GCC target("avx2")` + always_inline intrinsic 在 bookworm 自带的
-> gcc-12 上会 “inlining failed … target specific option mismatch” 编译失败；而 bookworm 源里
-> 没有 gcc-13（trixie/sid 才有，但其 glibc 2.40 会破坏 fnOS 兼容）。脚本改用 conda-forge 的
-> gcc-13——它自带 **glibc 2.34** 的 sysroot，产物只要求 `GLIBC≤2.34`（< fnOS 2.36），既满足
-> gcc-13 又守住 glibc 下限。构建脚本还会：把新版 **Vulkan-Headers(v1.3.290)** 与 **SPIRV-Headers**
-> 装进 conda sysroot（bookworm 的 1.3.239 太旧，缺 `vk::LayerSettingEXT`/`spv::`），并把 conda 的
-> `libstdc++.so.6`/`libgcc_s.so.1`/`libgomp.so.1` 打进 `bin/`、用 patchelf 把 RPATH 规整为纯
-> `$ORIGIN`（产物要 `GLIBCXX_3.4.32`，高于 fnOS 系统的 `3.4.30`，必须随包携带）。
-> CI 走官方 conda-forge 通道；本地 CN 可设 `AUDIOCPP_CONDA_CHANNEL`/`AUDIOCPP_MINICONDA_URL` 切清华镜像加速。
-
-> 首次编译约 20–60 分钟（audio.cpp 体量大，Vulkan + CPU 多 ISA 变体，外加一次 conda 工具链下载）。属正常。
-
-## 4. 在 fnOS 上安装
-
-1. 应用中心 → 手动安装 → 从电脑上传 → 选 `.fpk` → 确认来源 → 安装。
-2. 安装时 `install_callback` 会：解析数据共享目录（文件管理 → 应用文件里的 **audiocpp**）、
-   预置 silero VAD 权重与 demo 参考音频、按 `DATA_ROOT` 渲染出 `server.json`。
-3. **模型自动下载**：安装完成后，`install_callback` 会以应用用户身份在后台（`setsid`）运行
-   `bin/provision-models.sh`，**读取渲染好的 `server.json`**，对其中声明但文件缺失的模型调用随包的
-   `audiocpp_model_manager` 从 HuggingFace 下载对应 GGUF 包：
-   | server.json family | 包 id | 落点（= 配置的 `path`） | 大小 |
-   | --- | --- | --- | --- |
-   | `cosyvoice3` | `cosyvoice3_q8_0` | `models/CosyVoice3-GGUF/cosyvoice3-q8_0.gguf` | ~2.26 GB |
-   | `sense_asr` | `sensevoice_small_q8` | `models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf` | ~254 MB |
-
-   下载落点与 `server.json` 里配置的 `path` 完全一致，下完即可被 lazy-load 直接使用。
-   - 进度/状态：`audiocpp/logs/model-download.log`、`audiocpp/logs/model-download.status`（`running`/`done`/`failed`）。
-   - **下载完成前 TTS/STT 请求会失败**（模型还没就位），属正常，等 `status=done` 即可。
-   - 中断/失败可 SSH 前台续跑（幂等，只补缺失文件）：`/var/apps/audiocpp/cmd/main download-models`。
-   - 想离线预置：手动把上表两个 GGUF 放到对应路径即可，脚本检测到已存在会跳过下载。
-4. 在应用中心启动 audio.cpp；验证：
-   ```
-   curl -s http://<fnOS IP>:58009/health
-   curl -s http://<fnOS IP>:58009/v1/models
-   ```
-5. HA 接入同主 README 第 4 节，URL 填 `http://<fnOS IP>:58009`。
-
-**GPU**：应用用户已在 `render`/`video` 组，直接用宿主 `/dev/dri`。若 `/dev/dri` 不存在
-（核显驱动未加载 / BIOS 关闭），安装会告警、服务启动后 GPU 不可用。
-
-**卸载**：系统删除程序与配置，但**保留**共享目录里的模型与参考音频（避免误删 GB 级文件）。
-
-### 4.1 安装后的 fnOS 目录结构
-
-分两套：**程序目录**（升级替换）与**数据目录**（各 `@app*` 卷，卸载保留）。`vol1` 为安装时所选存储卷，可能是 `vol2` 等。
-
-```
-/var/apps/audiocpp/                # 应用主目录（元数据 + 生命周期脚本）
-├── manifest                       # 身份证：appname/version/service_port=58009/checksum
-├── ICON.PNG  ICON_256.PNG         # 图标
-├── audiocpp.sc                    # 58009 端口转发声明
-├── cmd/                           # 应用中心调用的脚本
-│   ├── main                       #   start / stop / status / download-models
-│   ├── install_init               #   预检 /dev/dri
-│   ├── install_callback           #   渲染 server.json + 预置资产 + 后台下载模型
-│   ├── upgrade_callback           #   升级后重渲染配置
-│   └── uninstall_callback         #   卸载保留数据，只记日志
-├── config/privilege               # run-as=package + join-groups video,render（GPU）
-├── config/resource                # data-share(audiocpp) + port-config
-├── wizard/install                 # 安装向导
-│  ── 以下为系统建立的软链接 ──
-├── target -> /vol1/@appcenter/audiocpp    # app.tgz 解压处（TRIM_APPDEST）
-├── etc    -> /vol1/@appconf/audiocpp      # 渲染后的 server.json（TRIM_PKGETC，持久）
-├── var    -> /vol1/@appdata/audiocpp      # 运行日志 / PID（TRIM_PKGVAR）
-├── tmp    -> /vol1/@apptemp/audiocpp
-├── home   -> /vol1/@apphome/audiocpp
-└── shares/audiocpp -> /vol1/@appshare/audiocpp   # 模型/音频/下载日志（DATA_ROOT）
+```text
+/var/apps/audiocpp/
+├── cmd/main                        # start/stop/restart/status/download-models/diagnose
+├── config/privilege                # package 用户，join-groups: video,render
+├── config/resource                 # data-share，不负责防火墙放行
+├── target/                         # 程序载荷，升级替换
+│   ├── bin/                        # 二进制、动态库、下载器、进程管理
+│   ├── etc/server.json.template
+│   ├── etc/models.lock.json        # 默认模型的 SHA256/大小/下载地址
+│   ├── assets/                     # VAD、参考音频
+│   ├── ui/images/icon_*.png        # 桌面入口指向 /health，不是 WebUI
+│   ├── licenses/
+│   └── build-info.json
+├── etc/runtime.json                # 安装时记录共享目录、应用用户、端口；不是服务配置
+├── var/audiocpp.pid                 # 管理进程 PID、启动时间和 boot ID
+└── shares/audiocpp/                 # 文件管理中的共享目录
+    ├── server.json                 # 可直接编辑，升级不覆盖
+    ├── models/
+    ├── voices/
+    └── logs/                       # 安装下载、手动重试与服务日志统一位置
+        ├── server.log
+        ├── model-download.log
+        ├── model-download.status
+        ├── service-launch.log
+        └── provision-launch.log
 ```
 
-**程序载荷 `target/`**（= `@appcenter/audiocpp`，随 app.tgz 解压）：
+没有共享路径时回退到 `var/data`，实际路径保存在 `etc/runtime.json`，可用 `diagnose` 查看。
 
-```
-target/
-├── bin/
-│   ├── audiocpp_server            # 主服务
-│   ├── audiocpp_cli
-│   ├── audiocpp_model_manager     # 模型下载器（内置 BoringSSL）
-│   ├── provision-models.sh        # 按 server.json 下载缺失模型
-│   └── *.so*                      # 依赖库 + ggml-cpu-*.so（rpath=$ORIGIN，须同目录）
-├── etc/server.json.template       # 配置模板（含 __DATA_ROOT__ 占位）
-├── ui/                            # 桌面入口（desktop_uidir=ui）
-│   ├── config                     #   指向 :58009/health 的 url 入口
-│   └── images/icon-{32,64,128,256}.png
-└── assets/
-    ├── silero_vad/silero_vad_16k.safetensors
-    └── demo_voices/*.wav, prompt_text
-```
+### 升级和保留策略
 
-**配置 `etc/`**（= `@appconf/audiocpp`，持久）：`server.json`（由模板渲染）。
+- 已有共享 `server.json` 按原字节保留，不强制覆盖用户配置。
+- 旧 `etc/server.json` 存在而共享配置缺失时，迁移到共享目录；将服务按配置目录解析的相对路径转换为原来的绝对路径，旧文件保留。
+- VAD/参考音频只补缺失文件；升级、卸载前按精确进程身份停止应用进程。
+- 脚本不删除共享模型、配置或参考音频；最终保留范围仍以 fnOS 卸载选项为准，请备份重要配置及自行添加的音频。
+- 旧日志留在原处供查询，新日志全部写共享 `logs/`。服务日志每个文件约 10 MiB、下载日志约 5 MiB，各保留 3 份轮转备份；启动错误日志每次启动重新写入。
 
-**运行数据 `var/`**（= `@appdata/audiocpp`）：
+服务由轻量 Python 管理进程直接启动原生二进制、转存并轮转日志。状态和停止通过 PID、启动时间、boot ID、命令行及 pidfd 核验，不再使用模糊 `pgrep/pkill`。共享日志含模型路径和推理信息，请只向可信用户授予共享目录访问权。
 
-```
-var/
-├── audiocpp.pid                   # main 写的 PID
-├── info.log                       # 启停日志
-└── logs/server.log                # 服务运行日志（--log-file）
-```
+### SSH 管理
 
-**共享数据 `shares/audiocpp/`**（= `@appshare/audiocpp`，即 DATA_ROOT，**卸载保留**；文件管理 →「应用文件」可见）：
-
-```
-audiocpp/
-├── models/
-│   ├── CosyVoice3-GGUF/cosyvoice3-q8_0.gguf                        # 自动下载 ~2.26 GB
-│   ├── SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf  # 自动下载 ~254 MB
-│   └── silero_vad/silero_vad_16k.safetensors                       # 安装包预置
-├── voices/                                                        # demo 参考音频，安装包预置
-│   └── demo_1_man.wav … prompt_text
-└── logs/
-    ├── model-download.log         # 下载进度
-    └── model-download.status      # running / done / failed
-```
-
-要点：
-- 配置文件 `server.json` 渲染在**共享目录** `shares/audiocpp/server.json`（文件管理 → 应用文件 可见、可直接编辑，卸载/升级保留、不覆盖你的修改）。模型下载落点由其中的 `models_root` + 各 `models[].path` 决定，均在 `shares/audiocpp/models/` 下。改完配置需重启应用生效：`/var/apps/audiocpp/cmd/main restart`。
-- **两个 logs 别混**：`var/logs/server.log` 是服务运行日志；`shares/audiocpp/logs/model-download.log` 是模型下载日志。
-- **卸载**删 `target/`、`etc/`、`var/`，**保留** `shares/audiocpp/`（含 `server.json` 与模型）；**升级**换 `target/` 程序，`shares/` 数据与配置不动。
-
-## 4.2 验证模型服务是否正常提供服务
-
-以下命令在 **NAS 上 SSH 执行**（用 `127.0.0.1`）；从局域网其它机器执行则把 `127.0.0.1` 换成 NAS 的 IP。服务端口固定 `58009`，模型 id 为 `zh-tts`（CosyVoice3 合成）与 `zh-asr`（SenseVoice 识别）。
-
-**① 进程与健康检查**
+无需手工设置 `TRIM_*`。普通管理员使用 `sudo`；入口会降权到安装记录的应用用户，不以 root 运行推理服务：
 
 ```bash
-# 应用进程状态：0=运行中，3=未运行
-/var/apps/audiocpp/cmd/main status; echo "exit=$?"
-
-# 健康端点：期望 HTTP 200
-curl -fsS -o /dev/null -w 'health=%{http_code}\n' http://127.0.0.1:58009/health
+sudo /var/apps/audiocpp/cmd/main status; echo "exit=$?"   # 0 运行中；3 未运行；1 管理错误
+sudo /var/apps/audiocpp/cmd/main diagnose
+sudo /var/apps/audiocpp/cmd/main restart
+sudo /var/apps/audiocpp/cmd/main download-models
 ```
 
-**② 模型是否下载就位**
+`diagnose` 显示运行用户、组、配置和日志目录、端口、render 节点的读写权限。GPU 不可用时检查 fnOS 驱动、BIOS 和应用用户的 `render/video` 组；**Vulkan 不会自动回退 CPU**。
+
+## 3. 模型下载与配置
+
+默认从 **ModelScope** 下载，失败按顺序尝试 HuggingFace、hf-mirror。hf-mirror 的 Xet 文件可能仍重定向到海外 HF CDN，不能保证国内加速。
+
+| id / family | 默认文件 | 字节数 |
+| --- | --- | ---: |
+| `zh-tts` / `cosyvoice3` | `models/CosyVoice3-GGUF/cosyvoice3-q8_0.gguf` | 2257658336 |
+| `zh-asr` / `sense_asr` | `models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf` | 254211200 |
+
+下载器使用 curl 传输、Python 标准库解析配置与校验：
+
+- HF 地址锁定 commit；ModelScope 文件必须匹配同一锁定哈希。
+- 校验大小、GGUF 文件头与完整 SHA256，通过后原子替换；已有文件也校验，不把零字节/HTML 当成功。
+- `.part` 按来源 URL 与内容哈希隔离；同源可续传，不跨源拼接旧字节。旧版无来源标记的 `.part` 不复用、不自动删除。
+- 同一配置及模型目标有互斥锁；并发调用返回 `75`，不覆盖正在运行任务的状态。
+- 下载失败返回非零，状态为 `failed`；安装允许后台下载稍后失败，但目录、配置或预置资产初始化失败会阻止安装。
+- 仅自动管理锁定的默认 family/文件名；不向自定义模型文件名写入默认模型。自定义模型应手动下载和验证，自动下载器会明确报告不支持。
+- 相对 `models[].path` 与上游一致，按 **server.json 所在目录**解析，不是按 `models_root` 拼接。
+- `done` 表示默认模型校验完成，不表示 GPU 或模型推理已经验证。
+
+临时切换源后前台重试：
 
 ```bash
-# 从运行中的服务进程反推真实共享目录（server.json 所在目录即 DATA_ROOT）
-PID="$(pgrep -f 'audiocpp_server .*--port 58009' | head -1)"
-SHARE="$(dirname "$(tr '\0' '\n' < /proc/$PID/cmdline | grep -A1 -- '--config' | tail -1)")"
-echo "SHARE=$SHARE"
-
-cat  "$SHARE/logs/model-download.status"                          # 期望：done
-ls -l "$SHARE/models/CosyVoice3-GGUF/cosyvoice3-q8_0.gguf"        # 期望：约 2.26 GB
-ls -l "$SHARE/models/SenseVoice-Small-GGUF/sensevoice-small-q8-audiocpp-v1.gguf"  # 期望：约 254 MB
-tail -n 20 "$SHARE/logs/model-download.log"                       # 看是否走的 modelscope、有无失败
+sudo env AUDIOCPP_MODEL_SOURCE=hf /var/apps/audiocpp/cmd/main download-models
+sudo env AUDIOCPP_MODEL_SOURCE=hf-mirror /var/apps/audiocpp/cmd/main download-models
 ```
 
-> `SHARE` 就是文件管理 → 应用文件 → audiocpp 那个目录。若进程没起来（拿不到 PID），直接在文件管理里打开该目录看 `logs/`、`models/` 即可。
+可通过 `AUDIOCPP_MS_BASE_URL`、`AUDIOCPP_HF_BASE_URL`、`AUDIOCPP_HF_MIRROR_BASE_URL` 指向可信 HTTP(S) 镜像；优先使用 HTTPS。这些环境变量只影响本次调用，不自动写入配置。没有未校验的 model_manager 下载回退。
 
-> 若 `status` 为 `running`/`failed` 或文件缺失，前台重跑下载（幂等、断点续传）：
-> `/var/apps/audiocpp/cmd/main download-models`
+离线安装可自行放入上表文件，再运行 `download-models` 校验。校验失败时原文件保留到新文件下载成功；确认旧 `.part` 不再需要后可在停止下载的情况下手动清理。
 
-**③ 已加载模型列表**
+新安装默认 `keep_tags=false`，适合 HA 获取纯转写文本。升级保留原配置；已有用户若需要此行为，编辑 `zh-asr.default_request_options.keep_tags` 后重启。内存紧张时可按需要设置 `idle_unload_ms`，这里不强制改变已有常驻策略。
+
+## 4. 服务验证
+
+以下在 NAS SSH 执行，远程客户端将 `127.0.0.1` 换为 NAS IP。
 
 ```bash
-curl -s http://127.0.0.1:58009/v1/models | python3 -m json.tool   # 应能看到 zh-tts / zh-asr
+sudo /var/apps/audiocpp/cmd/main diagnose
+curl -fsS http://127.0.0.1:58009/health
+curl -fsS http://127.0.0.1:58009/v1/models | python3 -m json.tool
 ```
 
-**④ TTS 合成验证**（首次请求会 lazy-load 模型，可能等待数十秒）
+模型列表应包含 `zh-tts` 和 `zh-asr`，但 lazy-load 模式下列表出现不代表模型已加载。共享日志 `model-download.status` 应为 `done`，继续执行真实推理：
 
 ```bash
-curl -s http://127.0.0.1:58009/v1/audio/speech \
+curl -fS --max-time 300 http://127.0.0.1:58009/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -d '{"model":"zh-tts","input":"你好，这是本地语音合成测试。","voice":"demo_3_woman","response_format":"wav"}' \
   -o /tmp/tts.wav
-file /tmp/tts.wav      # 期望：RIFF (little-endian) data, WAVE audio
-ls -l /tmp/tts.wav     # 期望：非空（几十~几百 KB）
-```
+file /tmp/tts.wav
 
-`voice` 可选 `demo_1_man` / `demo_2_man` / `demo_3_woman` / `demo_4_woman`（安装包已预置这些参考音频到 `shares/audiocpp/voices/`）。
-
-**⑤ STT 识别验证**（把上一步合成的 wav 回灌，形成 TTS→STT 闭环）
-
-```bash
-curl -s http://127.0.0.1:58009/v1/audio/transcriptions \
+curl -fS --max-time 300 http://127.0.0.1:58009/v1/audio/transcriptions \
   -F model=zh-asr -F file=@/tmp/tts.wav -F language=zh | python3 -m json.tool
-# 期望：返回转写文本，内容与「你好，这是本地语音合成测试。」大致一致
 ```
 
-**⑥ 运行日志 / GPU 后端**
+应得到合法 WAV，随后返回含相近中文内容的转写。Voice 可选 `demo_1_man`、`demo_2_man`、`demo_3_woman`、`demo_4_woman`。首次请求需要加载约 2.5 GB 权重，可能较慢。
+
+若失败，先检查共享 `logs/server.log`、`service-launch.log` 和 `model-download.log`；服务未启动时也能从文件管理查看，不需要先通过 PID 反推目录。
+
+HA 地址为 `http://<NAS_IP>:58009`，TTS 模型 `zh-tts`、STT 模型 `zh-asr`、Voice `demo_3_woman`。
+
+### 网络访问限制
+
+默认兼容局域网 HA，监听 `0.0.0.0:58009`。本打包层**没有配置 API 认证**，`--no-ui` 也不是认证：
+
+- 在 NAS 防火墙仅允许 HA 与管理设备 IP 访问 TCP 58009。
+- 不直接做公网端口映射；远程访问使用受认证的 VPN/反向代理。
+- 可在共享 `server.json` 设置 `"host": "127.0.0.1"` 或指定 NAS 局域网地址；重启生效。旧配置没有 `host` 时仍按原行为监听 `0.0.0.0`。
+- 包内不自动更改 NAS 防火墙，避免误断已有访问。
+
+## 5. 开发与本地构建
 
 ```bash
-tail -n 50 /var/apps/audiocpp/var/logs/server.log    # 或 var/ 下的 server.log
-# 关注：Vulkan 后端是否初始化成功、有无模型加载报错
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+shellcheck app/cmd/* scripts/*.sh payload/bin/*.sh
+actionlint
 ```
 
-**判定标准**：`/health` 返回 200、`/v1/models` 列出 `zh-tts`/`zh-asr`、④ 生成合法 WAV、⑤ 能转写回相近文本 —— 四项都通过即说明模型服务已正常提供 TTS/STT。
+CI 的 `Check packager` 在 main push/PR 运行，也作为正式构建前置检查。测试覆盖版本边界、发布恢复、模型错误内容/续传/锁、配置迁移、SSH 管理、PID 误判及 Moo 幂等/防降级。
 
-**常见问题**
-
-| 现象 | 排查 |
-| --- | --- |
-| `/health` 连不上 | `cmd/main status` 是否为 3；看 `server.log` 启动报错（端口占用/配置路径/缺 .so） |
-| TTS/STT 返回错误或空 | 模型是否 `done` 且文件大小正确；`server.log` 里是否 lazy-load 失败 |
-| 合成很慢/首次超时 | 首次请求要加载 2.26 GB 模型到显存/内存，属正常；后续请求变快 |
-| 识别不到 GPU、退回慢 | `server.log` 搜 Vulkan；确认 `/dev/dri` 存在、核显驱动已加载、应用用户在 render/video 组 |
-
-**Home Assistant 侧**：TTS/STT 集成指向 `http://<NAS_IP>:58009`，模型分别填 `zh-tts` / `zh-asr`，Voice 填 `demo_3_woman`。
-
-## 5. 本地手动构建（不用 CI）
-
-需要 Docker（用于提供 debian:12 构建环境）：
+本地构建同样必须在 Debian 12 容器中完成，容器只用于构建，不是 NAS 运行依赖：
 
 ```bash
-# 1) 取上游正式版源码（锁定 release tag）
-git clone --depth 1 --branch v0.9.4 https://github.com/0xShug0/audio.cpp audio.cpp-src
-
-# 2) 在 debian:12 里编译（portable 配方）→ dist/app.tgz
+git clone --depth 1 --branch v0.9.4 git@github.com:0xShug0/audio.cpp.git audio.cpp-src
 docker run --rm -v "$PWD":/work \
   -e SRC_DIR=/work/audio.cpp-src -e REPO_DIR=/work -e OUT_TGZ=/work/dist/app.tgz \
-  -e AUDIOCPP_VERSION=0.9.4 \
+  -e AUDIOCPP_VERSION=0.9.4-003 \
   debian:12 bash /work/scripts/build-audiocpp.sh
-
-# 3) 打包 → audiocpp_0.9.4_x86.fpk
-bash scripts/pack-fpk.sh app dist/app.tgz 0.9.4 x86 dist
+sudo chown -R "$(id -u):$(id -g)" dist
+bash scripts/pack-fpk.sh app dist/app.tgz 0.9.4-003 x86 dist
+python3 tools/check_payload.py --fpk dist/audiocpp_0.9.4-003_x86.fpk --version 0.9.4-003
 ```
 
-## 6. 与另外两种部署方式的关系
+版本仅为示例，实际发布前确认修订号尚未使用。下载工具支持镜像地址 `AUDIOCPP_CONDA_CHANNEL`、`AUDIOCPP_MINICONDA_URL`、`FNPACK_URL`；安装器/fnpack 校验值不会因更换镜像而放宽。
 
-| | 本 fpk（原生） | 主 README 第 7 节（Docker Compose） | 主 README 第 8 节 / `native/`（systemd 原生） |
-| --- | --- | --- | --- |
-| 安装入口 | 应用中心 GUI | Docker 管理 → 项目 | systemd 服务 |
-| 运行时 | 宿主原生进程 | 容器 | 宿主原生进程 |
-| GPU | join-groups 授权 /dev/dri | devices + group_add | 用户在 render/video 组 |
-| 升级 | 应用中心一键 | 换镜像 tag | 重跑构建脚本 |
-| 编译 | CI 编好 | 不用编（用镜像） | 在 fnOS 上编 |
+`pack-fpk.sh` 优先使用 `FNPACK` 指定的文件或 PATH 内 fnpack，否则下载官方固定版本；所有入口都会校验同一 SHA256。不要手工拼 tar 替代官方 fnpack。
 
-三者数据可互通（都是 `models/`+`voices/`+`server.json` 约定）。想"装个应用就用"选 fpk；
-想跟着上游镜像走选 Compose；想在 NAS 上完全自管选 systemd。
+## 6. Moo 应用源
 
-## 7. 已知限制
+仓库根 [moo.json](moo.json) 是 [Moo](https://github.com/Blue-Mink/moo) 应用源，用户在 Moo 中添加本仓库地址即可安装/更新。
 
-- fpk 只支持单端口（`service_port`），本应用固定 58009。
-- `platform = x86`（AMD/Intel 核显 Vulkan）。ARM fnOS 需另编 `arm` 平台包。
-- 首次 TTS/STT 请求触发 lazy 加载，等待数十秒属正常。
-- **模型自动下载需要 NAS 能访问 HuggingFace**（`huggingface.co`，约 2.5 GB）。网络受限/被墙时
-  后台下载会失败（`model-download.status=failed`），此时改为手动把两个 GGUF 放到对应路径，
-  或配置好代理后 `cmd/main download-models` 续跑。下载器不依赖系统 curl/OpenSSL（内置 BoringSSL）。
-- 构建在 GitHub 公共 runner 上，源码与产物会经过 CI 环境；介意可自建 runner。
+维护脚本 [tools/update_moo_json.py](tools/update_moo_json.py) 固定随仓库提供，缺失直接失败，不从远程 main 下载执行。同步时核对附件 digest（旧附件缺 digest 时告警并计算本地哈希）、大小、FPK 结构和 manifest 版本；保留最近两版索引，拒绝降级和同版本更换 SHA。
 
-## 8. 作为 Moo 应用商店的应用源
-
-仓库根的 [`moo.json`](moo.json) 让本仓库成为一个可被
-[Moo 应用商店](https://github.com/Blue-Mink/moo)（第三方飞牛应用中心）收录的**应用源**。
-用户在 Moo 里"添加源"填入本仓库地址即可浏览 / 安装 / 更新本应用。
-
-- **骨架已写好**：`schema_version=moo`、`source_info`、`apps.audiocpp`（展示名 / 简介 /
-  分类 `AI` / 图标 / 端口 / `install_type=package`）。键名 `audiocpp` 与 manifest 的 `appname` 一致。
-- **版本节点自动生成**：`releases` 初始为空；发布 Release 后由
-  [`.github/workflows/moo-json.yml`](.github/workflows/moo-json.yml) 自动下载 `.fpk`、
-  校验 sha256、把 `download_url / sha256 / size` 写进 `releases.<版本>` 并提交回 `main`。
-  维护脚本已 vendor 到 [`tools/update_moo_json.py`](tools/update_moo_json.py)，离线自包含。
-- **仓库地址已填**：`moo.json` 里 `source_info.homepage` / `bug_report_url` / `icon_url` /
-  `readme_url` 均指向 `kylin7226/fnos-audiocpp-native`。下载直链由 CI 按 `git remote origin`
-  自动推导，无需手填。若日后迁移仓库，改这 4 处即可。
-
-本地预览一次写入（不改文件，只看 diff）：
-
-```bash
-python3 tools/update_moo_json.py --file moo.json --repo kylin7226/fnos-audiocpp-native \
-  --tag v0.9.4-000 --fpk dist/audiocpp_0.9.4-000_x86.fpk --keep 2 --dry-run
-```
-
-> 发布流程：`git tag v0.9.4-000 && git push origin v0.9.4-000` → `build-fpk` 构建并创建
-> Release 附 `.fpk`（版本 `0.9.4-000`）→ Release published 触发 `Update moo.json` 自动写回索引。
-> 同一上游版本重新打包时递增修订号：`v0.9.4-001`、`v0.9.4-002`…
+旧 Release 不因索引保留数量而自动删除，可用于手动回退。当前索引只在真正发布成功后更新，不要手改 SHA 或拿预览包覆盖正式版。

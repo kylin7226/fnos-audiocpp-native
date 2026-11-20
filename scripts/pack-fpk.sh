@@ -38,6 +38,9 @@ APP_DIR="${1:-}"; APP_TGZ="${2:-}"; VERSION="${3:-}"; PLATFORM="${4:-}"; OUT_DIR
 [[ -f "$APP_TGZ" ]] || err "app.tgz 不存在：$APP_TGZ"
 
 FNPACK_URL="${FNPACK_URL:-https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64}"
+FNPACK_SHA256=54b97fa7b70968c4d05c79840f5daeff508957d0bb2062fdb0376d00d9615c93
+[[ -z "$VERSION" || "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-[0-9]{3}$ ]] || err "版本必须为 X.Y.Z-NNN"
+[[ -z "$PLATFORM" || "$PLATFORM" == x86 ]] || err "只支持 x86"
 
 # ── 校验骨架完整性 ────────────────────────────────────────────────────────────
 for f in manifest config/privilege config/resource cmd/main ui/config ICON.PNG ICON_256.PNG; do
@@ -61,17 +64,20 @@ SIZE=$(stat -c%s "$APP_TGZ" 2>/dev/null || stat -f%z "$APP_TGZ")
 
 # ── 定位 / 下载 fnpack ────────────────────────────────────────────────────────
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
-if [[ -n "${FNPACK:-}" && -x "${FNPACK}" ]]; then
-  FNPACK_BIN="$FNPACK"
+if [[ -n "${FNPACK:-}" ]]; then
+  [[ -f "$FNPACK" ]] || err "FNPACK 文件不存在"
+  FNPACK_BIN="$(realpath "$FNPACK")"
 elif command -v fnpack >/dev/null 2>&1; then
   FNPACK_BIN="$(command -v fnpack)"
 else
   FNPACK_BIN="$WORK/fnpack"
   info "下载 fnpack：$FNPACK_URL"
-  curl -fsSL --retry 3 -o "$FNPACK_BIN" "$FNPACK_URL" || err "fnpack 下载失败：$FNPACK_URL"
-  chmod +x "$FNPACK_BIN"
+  curl -fsSL --retry 3 --connect-timeout 20 --max-time 300 -o "$FNPACK_BIN" "$FNPACK_URL" || err "fnpack 下载失败：$FNPACK_URL"
 fi
-info "使用 fnpack：$FNPACK_BIN（$("$FNPACK_BIN" --help 2>&1 | grep -i '^Version' || echo '?')）"
+FNPACK_BIN="$(realpath "$FNPACK_BIN")"
+printf '%s  %s\n' "$FNPACK_SHA256" "$FNPACK_BIN" | sha256sum -c - || err "fnpack SHA256 不符"
+[[ -x "$FNPACK_BIN" ]] || chmod +x "$FNPACK_BIN"
+info "使用已验证的 fnpack 1.2.3：$FNPACK_BIN"
 
 # ── 组装 fnpack 工程目录 ──────────────────────────────────────────────────────
 PROJ="$WORK/$APPNAME"; mkdir -p "$PROJ"
@@ -104,7 +110,8 @@ cp "$APP_DIR/ui/config" "$PROJ/app/ui/config"
 # ui/config 里 icon 用 {0} 占位尺寸，生成 icon_{32,64,128,256}.png（下划线命名，
 # 与 fnpack 模板 / ui/config 的 images/icon_{0}.png 一致）。
 gen_icon() {
-  local sz="$1" out="$PROJ/app/ui/images/icon_${sz}.png"
+  local sz="$1"
+  local out="$PROJ/app/ui/images/icon_${sz}.png"
   if command -v magick >/dev/null 2>&1; then
     magick "$APP_DIR/ICON_256.PNG" -resize "${sz}x${sz}" "$out"
   elif command -v convert >/dev/null 2>&1; then
@@ -116,6 +123,7 @@ for sz in 32 64 128 256; do gen_icon "$sz"; done
 
 VER=$(grep '^version'  "$PROJ/manifest" | awk -F'=' '{print $2}' | tr -d ' ')
 PLAT=$(grep '^platform' "$PROJ/manifest" | awk -F'=' '{print $2}' | tr -d ' ')
+[[ "$VER" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-[0-9]{3}$ ]] || err "请显式指定 X.Y.Z-NNN 版本"
 FPK_NAME="${APPNAME}_${VER}_${PLAT:-x86}.fpk"
 
 # ── fnpack build ──────────────────────────────────────────────────────────────

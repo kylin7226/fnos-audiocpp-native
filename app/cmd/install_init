@@ -1,7 +1,12 @@
 #!/bin/bash
 # 安装前预检：确认 Vulkan 所需的 /dev/dri 渲染节点存在。
 # 缺失只告警不阻断（用户可能后补驱动），信息写入用户可见日志。
-set -u
+set -euo pipefail
+
+for dependency in python3 curl; do
+    command -v "$dependency" >/dev/null || { printf '缺少必要依赖：%s\n' "$dependency" >&2; exit 1; }
+done
+python3 -c 'import os, signal; fd=os.pidfd_open(os.getpid()); os.close(fd); assert hasattr(signal, "pidfd_send_signal")'
 
 NOTE="${TRIM_TEMP_LOGFILE:-/dev/null}"
 

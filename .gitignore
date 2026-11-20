@@ -3,6 +3,8 @@ dist/
 audio.cpp-src/
 *.fpk
 *.tgz
+__pycache__/
+release-assets/
 
 # 打包脚本临时目录
 *.tmp.*
